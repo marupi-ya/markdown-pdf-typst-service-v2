@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: markdown-pdf-typst-service
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeployTrigger: commit
+    envVars:
+      - key: TYPST_SERVICE_TOKEN
+        sync: false
+      - key: HOST
+        value: 0.0.0.0
+      - key: TYPST_FONT_PATHS
+        value: /usr/share/fonts/opentype/noto

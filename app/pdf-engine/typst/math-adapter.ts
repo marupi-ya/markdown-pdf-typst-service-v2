@@ -55,8 +55,74 @@ function unsupportedCommands(source: string) {
   return [...unsupported];
 }
 
+type TexArgument = {
+  end: number;
+  value: string;
+  grouped: boolean;
+};
+
+function isEscaped(source: string, index: number) {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) slashes += 1;
+  return slashes % 2 === 1;
+}
+
+function readTexArgument(source: string, start: number): TexArgument | null {
+  let cursor = start;
+  while (cursor < source.length && /\s/u.test(source[cursor])) cursor += 1;
+  if (cursor >= source.length) return null;
+
+  if (source[cursor] === "{") {
+    let depth = 1;
+    let end = cursor + 1;
+    while (end < source.length && depth > 0) {
+      if (source[end] === "{" && !isEscaped(source, end)) depth += 1;
+      if (source[end] === "}" && !isEscaped(source, end)) depth -= 1;
+      end += 1;
+    }
+    if (depth !== 0) return null;
+    return { value: source.slice(cursor, end), end, grouped: true };
+  }
+
+  if (source[cursor] === "\\") {
+    const command = source.slice(cursor).match(/^\\(?:[A-Za-z]+|.)/u)?.[0];
+    if (!command) return null;
+    return { value: command, end: cursor + command.length, grouped: false };
+  }
+
+  const [token] = Array.from(source.slice(cursor));
+  return token ? { value: token, end: cursor + token.length, grouped: false } : null;
+}
+
+function normalizeUngroupedBinaryArguments(source: string, command: "frac" | "binom") {
+  const marker = `\\${command}`;
+  let result = "";
+  let cursor = 0;
+  while (cursor < source.length) {
+    const found = source.indexOf(marker, cursor);
+    if (found < 0) return result + source.slice(cursor);
+    const afterCommand = found + marker.length;
+    if (/[A-Za-z]/u.test(source[afterCommand] ?? "")) {
+      result += source.slice(cursor, afterCommand);
+      cursor = afterCommand;
+      continue;
+    }
+    const numerator = readTexArgument(source, afterCommand);
+    const denominator = numerator ? readTexArgument(source, numerator.end) : null;
+    if (!numerator || !denominator) {
+      result += source.slice(cursor, afterCommand);
+      cursor = afterCommand;
+      continue;
+    }
+    const grouped = (argument: TexArgument) => argument.grouped ? argument.value : `{${argument.value}}`;
+    result += source.slice(cursor, found) + marker + grouped(numerator) + grouped(denominator);
+    cursor = denominator.end;
+  }
+  return result;
+}
+
 function normalizeLatex(source: string) {
-  return source
+  const normalized = source
     .trim()
     .replace(/\\displaystyle\b/gu, "")
     .replace(/\\textstyle\b/gu, "")
@@ -64,6 +130,10 @@ function normalizeLatex(source: string) {
     .replace(/\\tfrac\b/gu, "\\frac")
     .replace(/\\,/gu, "\\,")
     .replace(/\u2212/gu, "-");
+  // TeX permits single-token arguments such as `\frac12`, while the
+  // converter expects explicit groups. Preserve TeX semantics by grouping one
+  // token at a time before conversion.
+  return normalizeUngroupedBinaryArguments(normalizeUngroupedBinaryArguments(normalized, "frac"), "binom");
 }
 
 function normalizeConvertedMath(source: string) {

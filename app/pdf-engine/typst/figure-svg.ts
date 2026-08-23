@@ -160,16 +160,35 @@ function triangle(node: FigureNode) {
   if (!result.ok) throw new Error(result.errors.join(" "));
   const { vertices, sides, angles } = result.config;
   const points = vertices.map((point) => `${point.x},${point.y}`).join(" ");
-  const labels = vertices.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="3.5" fill="#173a67"/><text x="${point.x + 7}" y="${point.y - 7}">${xml(point.label)}</text>`).join("");
+  const centroid = {
+    x: vertices.reduce((sum, point) => sum + point.x, 0) / vertices.length,
+    y: vertices.reduce((sum, point) => sum + point.y, 0) / vertices.length,
+  };
+  const direction = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    return { x: dx / length, y: dy / length };
+  };
+  const labels = vertices.map((point) => {
+    const outward = direction(centroid, point);
+    const x = point.x + outward.x * 15;
+    const y = point.y + outward.y * 15 + 4;
+    const anchor = outward.x > 0.25 ? "start" : outward.x < -0.25 ? "end" : "middle";
+    return `<circle cx="${point.x}" cy="${point.y}" r="3.5" fill="#173a67"/><text text-anchor="${anchor}" x="${x.toFixed(2)}" y="${y.toFixed(2)}">${xml(point.label)}</text>`;
+  }).join("");
   const byLabel = new Map(vertices.map((point) => [point.label, point]));
   const sideLabels = sides.map((side) => {
     const from = byLabel.get(side.from)!;
     const to = byLabel.get(side.to)!;
-    return `<text text-anchor="middle" x="${(from.x + to.x) / 2}" y="${(from.y + to.y) / 2 - 7}">${xml(side.label)}</text>`;
+    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    const outward = direction(centroid, midpoint);
+    return `<text text-anchor="middle" dominant-baseline="middle" x="${(midpoint.x + outward.x * 13).toFixed(2)}" y="${(midpoint.y + outward.y * 13).toFixed(2)}">${xml(side.label)}</text>`;
   }).join("");
-  const angleLabels = angles.map((angle) => {
+  const angleLabels = angles.filter((angle) => angle.label.trim() !== angle.vertex.trim()).map((angle) => {
     const point = byLabel.get(angle.vertex)!;
-    return `<text x="${point.x + 14}" y="${point.y + 18}">${xml(angle.label)}</text>`;
+    const inward = direction(point, centroid);
+    return `<text text-anchor="middle" dominant-baseline="middle" x="${(point.x + inward.x * 21).toFixed(2)}" y="${(point.y + inward.y * 21).toFixed(2)}">${xml(angle.label)}</text>`;
   }).join("");
   return svgFrame(`<polygon points="${points}" fill="#edf5fb" stroke="#173a67" stroke-width="2"/>${labels}${sideLabels}${angleLabels}`, 440, 270, node.params.caption ?? "三角形");
 }

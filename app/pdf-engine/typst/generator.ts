@@ -75,6 +75,7 @@ function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | 
   return `${marker(node)}
 #studio-box(
   ${typstString(kind)},
+  ${typstString(node.variant)},
   [${renderInlines(node.title)}],
   breakable: ${node.policy.allowBreak ? "true" : "false"},
   [
@@ -88,14 +89,12 @@ function renderBlock(node: TypstBlockNode): string {
     return `${marker(node)}\n#heading(level: ${node.level})[${renderInlines(node.children)}]`;
   }
   if (node.type === "Paragraph") {
-    return `${marker(node)}\n#par()[${renderInlines(node.children)}]`;
+    return `${marker(node)}\n#studio-par[${renderInlines(node.children)}]`;
   }
   if (node.type === "DisplayMath") {
     const math = latexToTypstMath(node.latex, node.sourceLine);
     return `${marker(node)}
-#block(width: 100%, breakable: false, above: 6pt, below: 7pt)[
-  #align(center)[$ ${math} $]
-]`;
+#studio-display-math[$ ${math} $]`;
   }
   if (node.type === "List") {
     const renderer = node.ordered ? "enum" : "list";
@@ -108,9 +107,15 @@ function renderBlock(node: TypstBlockNode): string {
   }
   if (node.type === "Figure") {
     const caption = node.caption.length ? `[${renderInlines(node.caption)}]` : "none";
+    const width = node.figureType === "triangle" || node.figureType === "circle"
+      ? "72%"
+      : node.figureType === "number-line" || node.figureType === "sign-chart"
+        ? "84%"
+        : "94%";
     return `${marker(node)}
 #studio-figure(
-  image(${typstString(node.assetPath)}, width: 94%),
+  image(${typstString(node.assetPath)}, width: 100%),
+  width: ${width},
   caption: ${caption},
 )`;
   }
@@ -174,9 +179,55 @@ function collectFigures(nodes: TypstBlockNode[]): Extract<TypstBlockNode, { type
   return result;
 }
 
+function inlinePlainText(nodes: TypstInlineNode[]) {
+  return nodes.map((node): string => {
+    if (node.type === "InlineText") return node.value;
+    if (node.type === "InlineMath") return node.latex;
+    return inlinePlainText(node.children);
+  }).join("");
+}
+
+/**
+ * A run of exercises followed by an answer-section heading is a semantic
+ * boundary. Start that section on a fresh page without measuring DOM height.
+ */
+function startsAnswerSection(nodes: TypstBlockNode[], index: number) {
+  const current = nodes[index];
+  if (current?.type !== "Heading" || !/(?:解答|解説)/u.test(inlinePlainText(current.children))) return false;
+  if (nodes[index - 1]?.type === "PageBreak") return false;
+
+  let problemCount = 0;
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const node = nodes[cursor];
+    if (node.type === "Problem") {
+      problemCount += 1;
+      continue;
+    }
+    if (node.type === "Divider") continue;
+    break;
+  }
+  if (problemCount < 2) return false;
+
+  for (let cursor = index + 1; cursor < nodes.length; cursor += 1) {
+    const node = nodes[cursor];
+    if (node.type === "Divider") continue;
+    return node.type === "Answer";
+  }
+  return false;
+}
+
+function renderDocumentBody(nodes: TypstBlockNode[]) {
+  return nodes.map((node, index) => {
+    const sectionBreak = startsAnswerSection(nodes, index)
+      ? "// studio-semantic-break:answer-section\n#pagebreak()\n"
+      : "";
+    return `${sectionBreak}${renderBlock(node)}`;
+  }).join("\n\n");
+}
+
 export function generateTypstProject(request: TypstCompileRequest): GeneratedTypstProject {
   const ast = buildTypstAst(request.markdown, request.outputMode, request.includeQuestionInAnswer);
-  const body = ast.children.map(renderBlock).join("\n\n");
+  const body = renderDocumentBody(ast.children);
   const source = [
     documentVariables(ast),
     renderTypstTheme(request.theme, request.settings),

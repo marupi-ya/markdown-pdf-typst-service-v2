@@ -73,6 +73,7 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
   const theme = THEMES[themeId];
   const fontSizePt = settings.fontSize;
   const headingScale = Math.max(1.18, settings.headingSize / Math.max(1, settings.fontSize));
+  const paragraphGap = Math.max(2.8, settings.paragraphSpacing * 0.55);
   const pageHeader = settings.showHeader
     ? `context grid(
       columns: (1fr, auto),
@@ -165,14 +166,40 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
 #show math.equation: set block(above: 6pt, below: 7pt)
 #show table.cell.where(y: 0): set text(weight: "bold")
 
-#let studio-box(kind, title, breakable: true, body) = {
-  let accent = if kind == "answer" { rgb("#2b6f9f") }
-    else if kind == "warning" { rgb("#b35b16") }
-    else if kind == "problem" { primary-color }
-    else { heading-color }
-  let fill-color = if kind == "warning" { rgb("#fff6e8") }
-    else if kind == "answer" { rgb("#f2f7fb") }
+#let studio-par(body) = block(
+  width: 100%,
+  below: ${pt(paragraphGap)},
+  par()[#body],
+)
+
+#let studio-display-math(body) = block(
+  width: 100%,
+  breakable: false,
+  above: 5pt,
+  below: 7pt,
+  inset: (left: 1.15em, right: 0.4em),
+  align(left)[#body],
+)
+
+#let studio-box(kind, variant, title, breakable: true, body) = {
+  let accent = if variant == "caution" { rgb("#b35b16") }
+    else if variant == "solution" { rgb("#596b78") }
+    else if variant == "key-point" { rgb("#177257") }
+    else if variant == "example" { rgb("#694c98") }
+    else if variant == "definition" { heading-color }
+    else if variant == "summary" { rgb("#5f4b8b") }
+    else { primary-color }
+  let fill-color = if variant == "caution" { rgb("#fff6e8") }
+    else if variant == "solution" { rgb("#f4f6f7") }
+    else if variant == "key-point" { rgb("#eef8f4") }
+    else if variant == "example" { rgb("#f7f3fb") }
+    else if variant == "definition" { secondary-color }
+    else if variant == "summary" { rgb("#f7f4fb") }
+    else if kind == "problem" { white }
     else { surface-color }
+  let border-color = if variant == "solution" { rgb("#d4dce1") }
+    else if variant == "caution" { rgb("#efd2ae") }
+    else { secondary-color }
   block(
     width: 100%,
     breakable: breakable,
@@ -180,7 +207,7 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
     below: 8pt,
     inset: (top: 7pt, right: 9pt, bottom: 8pt, left: 10pt),
     fill: fill-color,
-    stroke: (left: 3pt + accent, top: 0.7pt + secondary-color, right: 0.7pt + secondary-color, bottom: 0.7pt + secondary-color),
+    stroke: (left: 3pt + accent, top: 0.7pt + border-color, right: 0.7pt + border-color, bottom: 0.7pt + border-color),
     radius: 2.5pt,
     [
       #block(sticky: true, below: 5pt)[#text(weight: "bold", fill: accent)[#title]]
@@ -189,15 +216,17 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
   )
 }
 
-#let studio-figure(body, caption: none) = block(
-  width: 100%,
-  breakable: false,
-  above: 8pt,
-  below: 9pt,
-  [
-    #align(center)[#body]
-    #if caption != none { align(center)[#text(size: 8pt, fill: muted-color)[#caption]] }
-  ],
-)
+#let studio-figure(body, width: 94%, caption: none) = align(center)[
+  #block(
+    width: width,
+    breakable: false,
+    above: 8pt,
+    below: 9pt,
+    [
+      #align(center)[#body]
+      #if caption != none { align(center)[#text(size: 8pt, fill: muted-color)[#caption]] }
+    ],
+  )
+]
 `;
 }

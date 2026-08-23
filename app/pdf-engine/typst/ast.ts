@@ -6,6 +6,7 @@ import {
 } from "../../studio-core";
 import type {
   TypstBlockNode,
+  TypstBoxVariant,
   TypstBreakPolicy,
   TypstDocumentAst,
   TypstInlineNode,
@@ -231,7 +232,14 @@ function calloutType(blockName?: string): Extract<TypstBlockNode["type"], "Probl
 }
 
 function defaultCalloutTitle(block: StudioBlock, type: ReturnType<typeof calloutType>) {
-  if (block.title) return block.title;
+  if (block.title) {
+    // 「例題32辺…」のように問題番号と本文が連結して見えないよう、
+    // 教材でよく使う番号付きタイトルだけに明確な区切りを補う。
+    return block.title.replace(
+      /^((?:例題|演習|問題|練習)\s*\d+)\s+(.+)$/u,
+      "$1：$2",
+    );
+  }
   if (type === "Problem") return "問題";
   if (type === "Answer") return "解答・解説";
   if (type === "Point") return "ポイント";
@@ -241,6 +249,26 @@ function defaultCalloutTitle(block: StudioBlock, type: ReturnType<typeof callout
   if (block.blockName === "definition") return "定義";
   if (block.blockName === "summary") return "まとめ";
   return "解説";
+}
+
+function calloutVariant(blockName?: string): TypstBoxVariant {
+  if (blockName === "learning-goals") return "learning-goals";
+  if (blockName === "definition") return "definition";
+  if (blockName === "key-point") return "key-point";
+  if (blockName === "example") return "example";
+  if (blockName === "exercise") return "exercise";
+  if (blockName === "answer-question") return "answer-question";
+  if (blockName === "solution") return "solution";
+  if (blockName === "caution") return "caution";
+  if (blockName === "summary") return "summary";
+  return "explanation";
+}
+
+function containsLargeFixedChild(nodes: TypstBlockNode[]): boolean {
+  return nodes.some((node) => {
+    if (node.type === "Figure" || node.type === "Table") return true;
+    return isTypstBoxNode(node) && containsLargeFixedChild(node.children);
+  });
 }
 
 function blockToTypstNode(block: StudioBlock): TypstBlockNode {
@@ -324,12 +352,27 @@ function blockToTypstNode(block: StudioBlock): TypstBlockNode {
   }]).map(blockToTypstNode);
   const length = nodeTextLength(children);
   const meaningfulChildren = children.filter((child) => child.type !== "Divider").length;
-  const shortProblem = type === "Problem" && length <= 900 && meaningfulChildren <= 5;
+  const variant = calloutVariant(block.blockName);
+  const hasLargeFixedChild = containsLargeFixedChild(children);
+  const shortProblem = type === "Problem"
+    && length <= 900
+    && meaningfulChildren <= 7
+    && !hasLargeFixedChild;
+  const shortAnswer = type === "Answer"
+    && length <= 900
+    && meaningfulChildren <= 16
+    && !hasLargeFixedChild;
   const shortNotice = ["Point", "Example", "Warning"].includes(type) && length <= 620 && meaningfulChildren <= 4;
-  const keepTogether = shortProblem || shortNotice;
+  const shortReferenceBox = type === "Explanation"
+    && ["definition", "learning-goals", "summary"].includes(variant)
+    && length <= 850
+    && meaningfulChildren <= 9
+    && !hasLargeFixedChild;
+  const keepTogether = shortProblem || shortAnswer || shortNotice || shortReferenceBox;
   return {
     id: block.id,
     type,
+    variant,
     sourceLine: block.startLine,
     title: parseTypstInline(defaultCalloutTitle(block, type), block.startLine),
     children,

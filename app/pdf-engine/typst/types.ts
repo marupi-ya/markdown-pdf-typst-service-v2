@@ -20,6 +20,18 @@ export type TypstBreakPolicy = {
   allowBreak: boolean;
 };
 
+export type TypstBoxVariant =
+  | "learning-goals"
+  | "explanation"
+  | "definition"
+  | "key-point"
+  | "example"
+  | "exercise"
+  | "answer-question"
+  | "solution"
+  | "caution"
+  | "summary";
+
 type TypstNodeBase = {
   id: string;
   sourceLine: number;
@@ -34,6 +46,7 @@ export type TypstBlockNode =
   | (TypstNodeBase & { type: "Table"; header: TypstInlineNode[][]; rows: TypstInlineNode[][][] })
   | (TypstNodeBase & {
       type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning";
+      variant: TypstBoxVariant;
       title: TypstInlineNode[];
       children: TypstBlockNode[];
     })
@@ -94,4 +107,3 @@ export type TypstCompileErrorPayload = {
   source?: string;
   details?: string[];
 };
-

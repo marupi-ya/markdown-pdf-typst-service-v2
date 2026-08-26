@@ -368,7 +368,15 @@ function blockToTypstNode(block: StudioBlock): TypstBlockNode {
     && length <= 850
     && meaningfulChildren <= 9
     && !hasLargeFixedChild;
-  const keepTogether = shortProblem || shortAnswer || shortNotice || shortReferenceBox;
+  const shortIllustratedExplanation = type === "Explanation"
+    && children.filter((child) => child.type === "Figure").length === 1
+    && length <= 360
+    && meaningfulChildren <= 3;
+  const keepTogether = shortProblem
+    || shortAnswer
+    || shortNotice
+    || shortReferenceBox
+    || shortIllustratedExplanation;
   return {
     id: block.id,
     type,

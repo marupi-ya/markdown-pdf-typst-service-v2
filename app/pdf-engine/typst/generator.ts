@@ -41,6 +41,27 @@ function inlineWeight(nodes: TypstInlineNode[]) {
   return Math.max(1, Math.min(3.5, Math.sqrt(Math.max(1, length))));
 }
 
+function inlinePlainText(nodes: TypstInlineNode[]) {
+  return nodes.map((node): string => {
+    if (node.type === "InlineText") return node.value;
+    if (node.type === "InlineMath") return node.latex;
+    return inlinePlainText(node.children);
+  }).join("");
+}
+
+type RenderContext = {
+  boxVariant?: Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>["variant"];
+  conclusion?: boolean;
+  finalMath?: boolean;
+};
+
+function isConclusionParagraph(node: TypstBlockNode) {
+  if (node.type !== "Paragraph") return false;
+  return /^(?:したがって|よって|ゆえに|以上より|結論として|答えは)/u.test(
+    inlinePlainText(node.children).trim(),
+  );
+}
+
 function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>) {
   const columns = Math.max(1, node.header.length, ...node.rows.map((row) => row.length));
   const pad = (row: TypstInlineNode[][]) => [
@@ -71,7 +92,25 @@ function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>) {
 
 function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>) {
   const kind = node.type.toLowerCase();
-  const body = node.children.map(renderBlock).join("\n\n");
+  const conclusionMath = new Set<number>();
+  node.children.forEach((child, index) => {
+    if (!isConclusionParagraph(child)) return;
+    const nextIndex = node.children.findIndex((candidate, candidateIndex) => (
+      candidateIndex > index && candidate.type !== "Divider"
+    ));
+    if (nextIndex >= 0 && node.children[nextIndex]?.type === "DisplayMath") conclusionMath.add(nextIndex);
+  });
+  if (node.variant === "solution") {
+    const lastMathIndex = node.children.findLastIndex((child) => child.type === "DisplayMath");
+    if (lastMathIndex >= 0 && node.children.slice(lastMathIndex + 1).some(isConclusionParagraph)) {
+      conclusionMath.add(lastMathIndex);
+    }
+  }
+  const body = node.children.map((child, index) => renderBlock(child, {
+    boxVariant: node.variant,
+    conclusion: node.variant === "solution" && isConclusionParagraph(child),
+    finalMath: node.variant === "solution" && conclusionMath.has(index),
+  })).join("\n\n");
   return `${marker(node)}
 #studio-box(
   ${typstString(kind)},
@@ -84,17 +123,26 @@ function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | 
 )`;
 }
 
-function renderBlock(node: TypstBlockNode): string {
+function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string {
   if (node.type === "Heading") {
     return `${marker(node)}\n#heading(level: ${node.level})[${renderInlines(node.children)}]`;
   }
   if (node.type === "Paragraph") {
-    return `${marker(node)}\n#studio-par[${renderInlines(node.children)}]`;
+    const renderer = context.conclusion ? "studio-conclusion" : "studio-par";
+    return `${marker(node)}\n#${renderer}[${renderInlines(node.children)}]`;
   }
   if (node.type === "DisplayMath") {
     const math = latexToTypstMath(node.latex, node.sourceLine);
+    if (context.finalMath) {
+      return `${marker(node)}
+#studio-final-display-math[$ ${math} $]`;
+    }
+    const emphasis = context.boxVariant === "definition";
     return `${marker(node)}
-#studio-display-math[$ ${math} $]`;
+#studio-display-math(
+  [$ ${math} $],
+  emphasis: ${emphasis ? "true" : "false"},
+)`;
   }
   if (node.type === "List") {
     const renderer = node.ordered ? "enum" : "list";
@@ -111,7 +159,9 @@ function renderBlock(node: TypstBlockNode): string {
       ? "72%"
       : node.figureType === "number-line" || node.figureType === "sign-chart"
         ? "84%"
-        : "94%";
+        : node.figureType === "mermaid"
+          ? "100%"
+          : "94%";
     return `${marker(node)}
 #studio-figure(
   image(${typstString(node.assetPath)}, width: 100%),
@@ -179,14 +229,6 @@ function collectFigures(nodes: TypstBlockNode[]): Extract<TypstBlockNode, { type
   return result;
 }
 
-function inlinePlainText(nodes: TypstInlineNode[]) {
-  return nodes.map((node): string => {
-    if (node.type === "InlineText") return node.value;
-    if (node.type === "InlineMath") return node.latex;
-    return inlinePlainText(node.children);
-  }).join("");
-}
-
 /**
  * A run of exercises followed by an answer-section heading is a semantic
  * boundary. Start that section on a fresh page without measuring DOM height.
@@ -216,11 +258,66 @@ function startsAnswerSection(nodes: TypstBlockNode[], index: number) {
   return false;
 }
 
+function runPosition(nodes: TypstBlockNode[], index: number, type: "Problem" | "Answer") {
+  if (nodes[index]?.type !== type || nodes[index - 1]?.type === "PageBreak") return null;
+
+  let start = index;
+  while (start > 0 && [type, "Divider"].includes(nodes[start - 1]?.type ?? "")) start -= 1;
+  let end = index;
+  while (end + 1 < nodes.length && [type, "Divider"].includes(nodes[end + 1]?.type ?? "")) end += 1;
+
+  const run = nodes.slice(start, end + 1).filter((node) => node.type === type);
+  const current = nodes[index];
+  return {
+    length: run.length,
+    position: run.findIndex((node) => node.id === current.id),
+  };
+}
+
+/**
+ * A long exercise set is a distinct learning phase. Start it on a fresh page
+ * so questions stay together as a usable worksheet without any manual height
+ * calculation or added writing area.
+ */
+function startsExerciseSection(nodes: TypstBlockNode[], index: number) {
+  const current = nodes[index];
+  if (current?.type !== "Heading") return false;
+  const title = inlinePlainText(current.children);
+  if (!/演習問題/u.test(title) || /(?:解答|解説)/u.test(title)) return false;
+  if (nodes[index - 1]?.type === "PageBreak") return false;
+
+  let problemCount = 0;
+  for (let cursor = index + 1; cursor < nodes.length; cursor += 1) {
+    const node = nodes[cursor];
+    if (node.type === "Problem") {
+      problemCount += 1;
+      continue;
+    }
+    if (node.type === "Divider") continue;
+    break;
+  }
+  return problemCount >= 6;
+}
+
+/**
+ * Split a long run of short answer boxes at its semantic midpoint. This uses
+ * AST order only; Typst still owns the layout inside each page and box.
+ */
+function startsBalancedAnswerPage(nodes: TypstBlockNode[], index: number) {
+  const run = runPosition(nodes, index, "Answer");
+  if (!run || run.length < 6) return false;
+  return run.position === Math.ceil(run.length / 2);
+}
+
 function renderDocumentBody(nodes: TypstBlockNode[]) {
   return nodes.map((node, index) => {
     const sectionBreak = startsAnswerSection(nodes, index)
       ? "// studio-semantic-break:answer-section\n#pagebreak()\n"
-      : "";
+      : startsExerciseSection(nodes, index)
+        ? "// studio-semantic-break:exercise-section\n#pagebreak()\n"
+        : startsBalancedAnswerPage(nodes, index)
+          ? "// studio-semantic-break:balanced-answer-run\n#pagebreak()\n"
+          : "";
     return `${sectionBreak}${renderBlock(node)}`;
   }).join("\n\n");
 }

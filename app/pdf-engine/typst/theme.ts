@@ -73,7 +73,9 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
   const theme = THEMES[themeId];
   const fontSizePt = settings.fontSize;
   const headingScale = Math.max(1.18, settings.headingSize / Math.max(1, settings.fontSize));
-  const paragraphGap = Math.max(2.8, settings.paragraphSpacing * 0.55);
+  const paragraphGap = Math.max(2.8, settings.paragraphSpacing * 0.52);
+  const displayMathSize = fontSizePt * 1.12;
+  const emphasizedMathSize = fontSizePt * 1.16;
   const pageHeader = settings.showHeader
     ? `context grid(
       columns: (1fr, auto),
@@ -130,40 +132,40 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
 )
 #set par(
   leading: ${Number(Math.max(0.4, settings.lineHeight - 1).toFixed(2))}em,
-  spacing: ${pt(settings.paragraphSpacing * 0.75)},
+  spacing: ${pt(settings.paragraphSpacing * 0.72)},
   justify: true,
   first-line-indent: 0pt,
 )
 #set heading(numbering: "1.1", outlined: false)
 #show heading.where(level: 1): it => block(
   sticky: true,
-  above: 12pt,
-  below: 7pt,
+  above: 11pt,
+  below: 6.5pt,
   inset: (bottom: 4pt),
   stroke: (bottom: 1.4pt + primary-color),
   text(size: ${Number((fontSizePt * headingScale * 1.18).toFixed(2))}pt, weight: "bold", fill: heading-color)[#it.body],
 )
 #show heading.where(level: 2): it => block(
   sticky: true,
-  above: 10pt,
-  below: 6pt,
+  above: 9pt,
+  below: 5.5pt,
   inset: (left: 7pt),
   stroke: (left: 3pt + primary-color),
   text(size: ${Number((fontSizePt * headingScale).toFixed(2))}pt, weight: "bold", fill: heading-color)[#it.body],
 )
 #show heading.where(level: 3): it => block(
   sticky: true,
-  above: 8pt,
-  below: 5pt,
+  above: 7.5pt,
+  below: 4.5pt,
   text(size: ${Number((fontSizePt * headingScale * 0.91).toFixed(2))}pt, weight: "bold", fill: heading-color)[#it.body],
 )
 #show heading.where(level: 4): it => block(
   sticky: true,
-  above: 6pt,
+  above: 5.5pt,
   below: 4pt,
   text(weight: "bold", fill: heading-color)[#it.body],
 )
-#show math.equation: set block(above: 6pt, below: 7pt)
+#show math.equation: set block(above: 5.5pt, below: 6.5pt)
 #show table.cell.where(y: 0): set text(weight: "bold")
 
 #let studio-par(body) = block(
@@ -172,45 +174,75 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
   par()[#body],
 )
 
-#let studio-display-math(body) = block(
+#let studio-display-math(body, emphasis: false) = block(
   width: 100%,
   breakable: false,
-  above: 5pt,
+  above: 5.5pt,
   below: 7pt,
   inset: (left: 1.15em, right: 0.4em),
-  align(left)[#body],
+  align(left)[
+    #text(size: if emphasis { ${pt(emphasizedMathSize)} } else { ${pt(displayMathSize)} })[#body]
+  ],
+)
+
+#let studio-final-display-math(body) = block(
+  width: 100%,
+  breakable: false,
+  above: 6pt,
+  below: 7pt,
+  inset: (left: 1.15em, right: 0.4em),
+  align(left)[#text(size: ${pt(emphasizedMathSize)})[#body]],
+)
+
+#let studio-conclusion(body) = block(
+  width: 100%,
+  above: 1.5pt,
+  below: ${pt(paragraphGap)},
+  text(weight: "medium")[#body],
 )
 
 #let studio-box(kind, variant, title, breakable: true, body) = {
   let accent = if variant == "caution" { rgb("#b35b16") }
     else if variant == "solution" { rgb("#596b78") }
     else if variant == "key-point" { rgb("#177257") }
-    else if variant == "example" { rgb("#694c98") }
     else if variant == "definition" { heading-color }
-    else if variant == "summary" { rgb("#5f4b8b") }
     else { primary-color }
   let fill-color = if variant == "caution" { rgb("#fff6e8") }
     else if variant == "solution" { rgb("#f4f6f7") }
     else if variant == "key-point" { rgb("#eef8f4") }
-    else if variant == "example" { rgb("#f7f3fb") }
     else if variant == "definition" { secondary-color }
-    else if variant == "summary" { rgb("#f7f4fb") }
-    else if kind == "problem" { white }
-    else { surface-color }
+    else if variant == "summary" { secondary-color }
+    else { white }
   let border-color = if variant == "solution" { rgb("#d4dce1") }
     else if variant == "caution" { rgb("#efd2ae") }
     else { secondary-color }
+  let plain-box = variant == "explanation" or variant == "learning-goals"
+  let box-stroke = if plain-box {
+    (left: 3pt + accent)
+  } else {
+    (left: 3pt + accent, top: 0.7pt + border-color, right: 0.7pt + border-color, bottom: 0.7pt + border-color)
+  }
+  let title-size = if variant == "solution" or kind == "problem" { 1.04em } else { 1em }
   block(
     width: 100%,
     breakable: breakable,
-    above: 7pt,
-    below: 8pt,
-    inset: (top: 7pt, right: 9pt, bottom: 8pt, left: 10pt),
+    above: 6.5pt,
+    below: 7.5pt,
+    inset: (top: 7pt, right: 9pt, bottom: 7.5pt, left: 10pt),
     fill: fill-color,
-    stroke: (left: 3pt + accent, top: 0.7pt + border-color, right: 0.7pt + border-color, bottom: 0.7pt + border-color),
+    stroke: box-stroke,
     radius: 2.5pt,
     [
-      #block(sticky: true, below: 5pt)[#text(weight: "bold", fill: accent)[#title]]
+      #if variant == "solution" {
+        block(
+          sticky: true,
+          below: 4pt,
+          inset: (bottom: 3pt),
+          stroke: (bottom: 0.5pt + border-color),
+        )[#text(size: title-size, weight: "bold", fill: accent)[#title]]
+      } else {
+        block(sticky: true, below: 4.5pt)[#text(size: title-size, weight: "bold", fill: accent)[#title]]
+      }
       #body
     ],
   )
@@ -221,7 +253,7 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
     width: width,
     breakable: false,
     above: 8pt,
-    below: 9pt,
+    below: 8pt,
     [
       #align(center)[#body]
       #if caption != none { align(center)[#text(size: 8pt, fill: muted-color)[#caption]] }

@@ -7,6 +7,11 @@ const THEMES = new Set<TypstThemeId>([
   "modern-navy",
   "soft-beige",
   "academic-red",
+  "editorial-terracotta",
+  "editorial-navy",
+  "editorial-forest",
+  "editorial-plum",
+  "editorial-ochre",
 ]);
 
 const OUTPUT_MODES = new Set(["complete", "questions", "answers"]);
@@ -73,4 +78,3 @@ export function validateTypstCompileRequest(value: unknown): TypstCompileRequest
 
   return request as TypstCompileRequest;
 }
-

@@ -6,7 +6,12 @@ export type TypstThemeId =
   | "standard-green"
   | "modern-navy"
   | "soft-beige"
-  | "academic-red";
+  | "academic-red"
+  | "editorial-terracotta"
+  | "editorial-navy"
+  | "editorial-forest"
+  | "editorial-plum"
+  | "editorial-ochre";
 
 export type TypstInlineNode =
   | { type: "InlineText"; value: string }

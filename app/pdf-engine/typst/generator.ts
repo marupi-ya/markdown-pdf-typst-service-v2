@@ -1,7 +1,7 @@
 import { buildTypstAst, collectExpectedText } from "./ast";
 import { generateFigureSvg } from "./figure-svg";
 import { latexToTypstMath } from "./math-adapter";
-import { renderTypstTheme } from "./theme";
+import { renderTypstTheme, typstThemeFigurePalette } from "./theme";
 import type {
   GeneratedTypstProject,
   TypstBlockNode,
@@ -197,7 +197,8 @@ function sourceMapFromMarkers(source: string): TypstSourceMapEntry[] {
 }
 
 function documentVariables(ast: TypstDocumentAst) {
-  return `#let document-title = ${typstString(ast.metadata.title)}
+  return `#let document-lesson-id = ${typstString(ast.metadata.lesson_id)}
+#let document-title = ${typstString(ast.metadata.title)}
 #let document-subject = ${typstString(ast.metadata.subject)}
 #let document-unit = ${typstString(ast.metadata.difficulty)}
 #let document-author = ${typstString(ast.metadata.author)}
@@ -227,6 +228,21 @@ function collectFigures(nodes: TypstBlockNode[]): Extract<TypstBlockNode, { type
   };
   nodes.forEach(visit);
   return result;
+}
+
+function applyEditorialFigurePalette(svg: string, primary: string, secondary: string) {
+  const replacements = new Map([
+    ["#1769aa", primary],
+    ["#173a67", primary],
+    ["#dcecf8", secondary],
+    ["#edf5fb", secondary],
+    ["#f4f9fd", secondary],
+    ["#b9d8ee", secondary],
+  ]);
+  return [...replacements].reduce(
+    (result, [source, target]) => result.replace(new RegExp(source, "giu"), target),
+    svg,
+  );
 }
 
 /**
@@ -333,11 +349,15 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
     "",
   ].filter(Boolean).join("\n");
 
+  const figurePalette = typstThemeFigurePalette(request.theme);
   const assets = collectFigures(ast.children).map((figure) => {
     try {
+      const svg = generateFigureSvg(figure, request.mermaidAssets);
       return {
         path: figure.assetPath,
-        contents: generateFigureSvg(figure, request.mermaidAssets),
+        contents: figurePalette && figure.figureType !== "mermaid"
+          ? applyEditorialFigurePalette(svg, figurePalette.primary, figurePalette.secondary)
+          : svg,
         mediaType: "image/svg+xml" as const,
       };
     } catch (error) {

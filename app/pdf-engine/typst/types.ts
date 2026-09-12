@@ -2,6 +2,7 @@ import type { Metadata, OutputMode } from "../../studio-core";
 import type { StudioSettings } from "../../theme-settings";
 
 export type TypstThemeId =
+  | "prep-school-blue"
   | "standard-blue"
   | "standard-green"
   | "modern-navy"

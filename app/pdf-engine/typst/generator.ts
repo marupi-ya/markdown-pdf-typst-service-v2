@@ -2,6 +2,7 @@ import { buildTypstAst, collectExpectedText } from "./ast";
 import { generateFigureSvg } from "./figure-svg";
 import { latexToTypstMath } from "./math-adapter";
 import { renderTypstTheme, typstThemeFigurePalette } from "./theme";
+import { prepSchoolFigureSvg } from "./prep-school-theme";
 import type {
   GeneratedTypstProject,
   TypstBlockNode,
@@ -325,8 +326,38 @@ function startsBalancedAnswerPage(nodes: TypstBlockNode[], index: number) {
   return run.position === Math.ceil(run.length / 2);
 }
 
-function renderDocumentBody(nodes: TypstBlockNode[]) {
+function figurePairStarts(nodes: TypstBlockNode[]) {
+  const starts: number[] = [];
+  for (let i = 0; i + 3 < nodes.length; i++) {
+    const [a, b, c, d] = nodes.slice(i, i + 4);
+    if (a.type !== "Heading" || a.level !== 3 || b.type !== "Figure"
+      || c.type !== "Heading" || c.level !== 3 || d.type !== "Figure") continue;
+    starts.push(i);
+    i += 3;
+  }
+  return starts;
+}
+
+function renderDocumentBody(nodes: TypstBlockNode[], pairFigures = false) {
+  const paired = new Map<number, string>();
+  const consumed = new Set<number>();
+  if (pairFigures) {
+    // Only explicit, consecutive heading/figure pairs form a gallery row.
+    // Prose, boxes and manual breaks always retain their original flow.
+    for (const i of figurePairStarts(nodes)) {
+      const [a, b, c, d] = nodes.slice(i, i + 4);
+      paired.set(i, `#block(width: 100%, breakable: false)[
+        #grid(columns: (1fr, 1fr), gutter: 12pt,
+          [${renderBlock(a)}\n${renderBlock(b)}],
+          [${renderBlock(c)}\n${renderBlock(d)}],
+        )
+      ]`);
+      consumed.add(i + 1); consumed.add(i + 2); consumed.add(i + 3);
+    }
+  }
   return nodes.map((node, index) => {
+    if (consumed.has(index)) return "";
+    if (paired.has(index)) return paired.get(index)!;
     const sectionBreak = startsAnswerSection(nodes, index)
       ? "// studio-semantic-break:answer-section\n#pagebreak()\n"
       : startsExerciseSection(nodes, index)
@@ -340,7 +371,7 @@ function renderDocumentBody(nodes: TypstBlockNode[]) {
 
 export function generateTypstProject(request: TypstCompileRequest): GeneratedTypstProject {
   const ast = buildTypstAst(request.markdown, request.outputMode, request.includeQuestionInAnswer);
-  const body = renderDocumentBody(ast.children);
+  const body = renderDocumentBody(ast.children, request.theme === "prep-school-blue");
   const source = [
     documentVariables(ast),
     renderTypstTheme(request.theme, request.settings),
@@ -350,9 +381,15 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
   ].filter(Boolean).join("\n");
 
   const figurePalette = typstThemeFigurePalette(request.theme);
+  const compactAssets = new Set(figurePairStarts(ast.children).flatMap(i => [i + 1, i + 3]).map(i =>
+    (ast.children[i] as Extract<TypstBlockNode, { type: "Figure" }>).assetPath));
   const assets = collectFigures(ast.children).map((figure) => {
     try {
-      const svg = generateFigureSvg(figure, request.mermaidAssets);
+      const rawSvg = generateFigureSvg(figure, request.mermaidAssets);
+      const svg = request.theme === "prep-school-blue"
+        ? prepSchoolFigureSvg(rawSvg, compactAssets.has(figure.assetPath),
+          ["data-chart", "bar-chart", "line-chart"].includes(figure.figureType) && figure.params.type !== "line")
+        : rawSvg;
       return {
         path: figure.assetPath,
         contents: figurePalette && figure.figureType !== "mermaid"

@@ -2,6 +2,7 @@ import type { StudioSettings } from "../../theme-settings";
 import type { TypstCompileRequest, TypstThemeId } from "./types";
 
 const THEMES = new Set<TypstThemeId>([
+  "prep-school-blue",
   "standard-blue",
   "standard-green",
   "modern-navy",

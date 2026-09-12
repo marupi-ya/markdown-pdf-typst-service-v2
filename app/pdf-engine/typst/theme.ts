@@ -1,7 +1,9 @@
 import type { StudioSettings } from "../../theme-settings";
 import type { TypstThemeId } from "./types";
+import { renderPrepSchoolTheme } from "./prep-school-theme";
 
 export const TYPST_THEME_LABELS: Record<TypstThemeId, string> = {
+  "prep-school-blue": "予備校テキスト / ブルー",
   "standard-blue": "Standard Blue",
   "standard-green": "Standard Green",
   "modern-navy": "Modern Navy",
@@ -31,7 +33,7 @@ export const CLASSIC_TYPST_THEME_IDS = [
 ] as const satisfies readonly TypstThemeId[];
 
 type TypstThemeTokens = {
-  layout: "classic" | "editorial";
+  layout: "classic" | "editorial" | "prep-school";
   primary: string;
   secondary: string;
   text: string;
@@ -41,6 +43,10 @@ type TypstThemeTokens = {
 };
 
 const THEMES: Record<TypstThemeId, TypstThemeTokens> = {
+  "prep-school-blue": {
+    layout: "prep-school", primary: "#52799b", secondary: "#e4e9ed",
+    text: "#151515", muted: "#454545", surface: "#ffffff", heading: "#173955",
+  },
   "standard-blue": {
     layout: "classic",
     primary: "#1769aa",
@@ -135,7 +141,7 @@ const THEMES: Record<TypstThemeId, TypstThemeTokens> = {
 
 export function typstThemeFigurePalette(themeId: TypstThemeId) {
   const theme = THEMES[themeId];
-  return theme.layout === "editorial"
+  return theme.layout === "editorial" || theme.layout === "prep-school"
     ? { primary: theme.primary, secondary: theme.secondary }
     : undefined;
 }
@@ -484,6 +490,7 @@ function renderEditorialTypstTheme(theme: TypstThemeTokens, settings: StudioSett
 
 export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings) {
   const theme = THEMES[themeId];
+  if (theme.layout === "prep-school") return renderPrepSchoolTheme(settings);
   if (theme.layout === "editorial") return renderEditorialTypstTheme(theme, settings);
   const fontSizePt = settings.fontSize;
   const headingScale = Math.max(1.18, settings.headingSize / Math.max(1, settings.fontSize));

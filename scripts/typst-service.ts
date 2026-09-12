@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { compileWithTypstCli, getTypstCompilerStatus, TypstCompilerError } from "../server/typst-cli-compiler";
 import { typstErrorPayload } from "../app/pdf-engine/typst/errors";
+import { TYPST_THEME_LABELS } from "../app/pdf-engine/typst/theme";
 
 const port = Number(process.env.PORT ?? 8789);
 // Render and other container hosts inject PORT and require the server to bind
@@ -52,7 +53,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
     try {
       const status = await getTypstCompilerStatus();
-      json(response, 200, status);
+      json(response, 200, { ...status, supportedThemes: Object.keys(TYPST_THEME_LABELS) });
     } catch (error) {
       const payload = error instanceof TypstCompilerError ? error.payload : typstErrorPayload(error, "compiler");
       json(response, 503, { available: false, ...payload });
@@ -89,4 +90,3 @@ const server = createServer(async (request, response) => {
 server.listen(port, host, () => {
   process.stdout.write(`Typst compiler service listening on http://${host}:${port}\n`);
 });
-

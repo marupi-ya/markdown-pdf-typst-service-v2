@@ -358,7 +358,8 @@ function renderDocumentBody(nodes: TypstBlockNode[], pairFigures = false) {
   return nodes.map((node, index) => {
     if (consumed.has(index)) return "";
     if (paired.has(index)) return paired.get(index)!;
-    const sectionBreak = startsAnswerSection(nodes, index)
+    // Textbook pages flow by actual content height; retain explicit PageBreak nodes.
+    const sectionBreak = pairFigures ? "" : startsAnswerSection(nodes, index)
       ? "// studio-semantic-break:answer-section\n#pagebreak()\n"
       : startsExerciseSection(nodes, index)
         ? "// studio-semantic-break:exercise-section\n#pagebreak()\n"

@@ -185,13 +185,19 @@ function splitTableRow(line: string) {
   const normalized = line.trim().replace(/^\|/u, "").replace(/\|$/u, "");
   const cells: string[] = [];
   let current = "";
-  let escaped = false;
-  for (const character of normalized) {
-    if (escaped) {
-      current += character;
-      escaped = false;
-    } else if (character === "\\") {
-      escaped = true;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index];
+    if (character === "\\") {
+      const next = normalized[index + 1];
+      // Markdown tables escape a literal separator as `\|`. Only consume the
+      // backslash for that table-level escape. Preserve LaTeX commands such as
+      // `\frac`, `\sqrt`, and `\pi` for the inline-math parser.
+      if (next === "|") {
+        current += next;
+        index += 1;
+      } else {
+        current += character;
+      }
     } else if (character === "|") {
       cells.push(current.trim());
       current = "";

@@ -3,6 +3,10 @@ import type { TypstCompileRequest, TypstThemeId } from "./types";
 
 const THEMES = new Set<TypstThemeId>([
   "prep-school-blue",
+  "prep-school-green",
+  "prep-school-burgundy",
+  "prep-school-purple",
+  "prep-school-brown",
   "standard-blue",
   "standard-green",
   "modern-navy",

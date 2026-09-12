@@ -1,13 +1,13 @@
 import type { StudioSettings } from "../../theme-settings";
 
-export function prepSchoolFigureSvg(svg: string, compact: boolean, bars: boolean) {
+export function prepSchoolFigureSvg(svg: string, compact: boolean, bars: boolean, secondary = "#e4e9ed") {
   let result = compact ? svg.replace(/font-size: 12px/g, "font-size: 22px").replace(/font-size: 11px/g, "font-size: 20px") : svg;
-  if (bars) result = result.replace(/rx="3" fill="#[a-f0-9]{6}"/gi, 'rx="0" fill="#e4e9ed" stroke="#454545" stroke-width="1.5"');
+  if (bars) result = result.replace(/rx="3" fill="#[a-f0-9]{6}"/gi, `rx="0" fill="${secondary}" stroke="#454545" stroke-width="1.5"`);
   return result;
 }
 
 /** White, serif textbook with restrained rules; shares the existing semantic AST. */
-export function renderPrepSchoolTheme(settings: StudioSettings) {
+export function renderPrepSchoolTheme(settings: StudioSettings, palette = { primary: "#52799b", secondary: "#e4e9ed", heading: "#173955" }) {
   const pt = (n: number) => `${Number(n.toFixed(2))}pt`;
   const mm = (n: number) => `${Number(n.toFixed(2))}mm`;
   const header = settings.showHeader ? `context block(width: 100%, inset: (bottom: 5pt), stroke: (bottom: 0.5pt + muted-color))[
@@ -18,12 +18,12 @@ export function renderPrepSchoolTheme(settings: StudioSettings) {
     [${settings.pageNumberPosition === "center" ? '#text(size: 8pt)[#counter(page).display("1")]' : ''}],
     align(right)[${settings.pageNumberPosition === "right" ? '#text(size: 8pt)[#counter(page).display("1")]' : settings.pageNumberPosition === "left" ? '#text(size: 7pt)[#document-copyright]' : ''}],
   )` : "none";
-  return `#let primary-color = rgb("#52799b")
-#let secondary-color = rgb("#e4e9ed")
+  return `#let primary-color = rgb("${palette.primary}")
+#let secondary-color = rgb("${palette.secondary}")
 #let body-color = rgb("#151515")
 #let muted-color = rgb("#454545")
 #let surface-color = white
-#let heading-color = rgb("#173955")
+#let heading-color = rgb("${palette.heading}")
 #let serif-font = ("Noto Serif CJK JP", "Noto Serif JP", "Yu Mincho", "Hiragino Mincho ProN", "Noto Sans CJK JP", "DejaVu Serif")
 #let sans-font = ("Noto Sans CJK JP", "Noto Sans Japanese", "Noto Sans JP", "Yu Gothic", "DejaVu Sans")
 #set document(title: document-title, author: document-author)

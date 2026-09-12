@@ -32,23 +32,27 @@ export function renderPrepSchoolTheme(settings: StudioSettings) {
   header: ${header}, footer: ${footer}, numbering: "1",
 )
 #set text(font: serif-font, size: ${pt(settings.fontSize)}, fill: body-color, lang: "ja")
-#set par(leading: ${Math.max(0.3, settings.lineHeight - 1).toFixed(2)}em, spacing: ${pt(settings.paragraphSpacing * 0.65)}, justify: true)
+#set par(leading: ${Math.max(0.3, settings.lineHeight - 1).toFixed(2)}em, spacing: ${pt(settings.paragraphSpacing)}, justify: false)
 #set heading(numbering: none, outlined: false)
-#show heading.where(level: 1): it => block(sticky: true, above: 6pt, below: 12pt)[
-  #text(size: ${pt(settings.headingSize * 1.27)}, weight: "bold")[#it.body]
+#set list(spacing: 6pt)
+#show list: set block(above: 6pt, below: 7pt)
+#set enum(spacing: 6pt)
+#show enum: set block(above: 6pt, below: 7pt)
+#show heading.where(level: 1): it => block(sticky: true, above: 6pt, below: 14pt, inset: (bottom: 5pt))[
+  #text(size: ${pt(settings.headingSize * 1.12)}, weight: "bold")[#it.body]
 ]
 #show heading.where(level: 2): it => block(width: 100%, sticky: true, above: 13pt, below: 7pt, inset: (bottom: 4pt), stroke: (bottom: 0.55pt + primary-color))[
   #text(size: ${pt(settings.headingSize)}, weight: "bold")[#it.body]
 ]
-#show heading.where(level: 3): it => block(sticky: true, above: 8pt, below: 5pt)[
+#show heading.where(level: 3): it => block(sticky: true, above: 12pt, below: 7pt, inset: (top: 3pt, bottom: 3pt))[
   #text(font: sans-font, size: ${pt(settings.fontSize * 1.08)}, weight: "bold")[#it.body]
 ]
 #show heading.where(level: 4): it => block(sticky: true, above: 6pt, below: 4pt)[#strong[#it.body]]
 #show math.equation: set block(above: 4pt, below: 5pt)
 #show table.cell.where(y: 0): set text(font: sans-font, weight: "bold")
 
-#let studio-par(body) = block(width: 100%, below: ${pt(Math.max(2.5, settings.paragraphSpacing * 0.5))}, par()[#body])
-#let studio-display-math(body, emphasis: false) = block(width: 100%, breakable: false, above: 5pt, below: 6pt)[
+#let studio-par(body) = block(width: 100%, above: 0pt, below: ${pt(Math.max(3, settings.paragraphSpacing * 0.6))}, inset: (top: 1.5pt, bottom: 1.5pt))[#par(body)]
+#let studio-display-math(body, emphasis: false) = block(width: 100%, breakable: false, above: 6pt, below: 7pt, inset: (y: 2pt))[
   #align(center)[#text(size: if emphasis { ${pt(settings.fontSize * 1.18)} } else { ${pt(settings.fontSize * 1.12)} })[#body]]
 ]
 #let studio-final-display-math(body) = studio-display-math(body)
@@ -56,55 +60,56 @@ export function renderPrepSchoolTheme(settings: StudioSettings) {
 
 #let textbook-label(title, framed: false) = box(
   fill: secondary-color, stroke: if framed { 0.5pt + primary-color } else { none },
-  inset: (x: 6pt, y: 2pt), radius: 0pt,
+  inset: (x: 7pt, y: 4pt), radius: 0pt,
 )[#text(font: sans-font, size: ${pt(settings.fontSize * 0.95)}, weight: "bold", fill: heading-color)[#title]]
+
+// All callout titles sit above the body. A long title must never reserve a
+// sidebar for an entire multi-paragraph derivation.
+#let textbook-heading(title, label: false) = block(width: 100%, sticky: true,
+  below: 7pt, inset: (bottom: 3pt))[
+  #if label { textbook-label(title) } else {
+    text(font: sans-font, weight: "bold", fill: heading-color)[#title]
+  }
+]
 
 #let studio-box(kind, variant, title, breakable: true, body) = {
   let framed = variant == "definition" or variant == "example" or variant == "exercise" or variant == "answer-question"
   let goal = variant == "learning-goals"
-  let ruled = variant == "key-point" or variant == "summary"
+  let ruled = variant == "key-point" or variant == "summary" or variant == "caution"
   if framed {
-    block(width: 100%, breakable: breakable, above: 7pt, below: 8pt,
+    block(width: 100%, breakable: breakable, above: 11pt, below: 12pt,
       stroke: 0.6pt + primary-color, radius: 0pt,
-      inset: (top: 0pt, right: 0pt, bottom: 7pt, left: 0pt),
+      inset: (x: 10pt, y: 9pt),
     )[
-      #block(sticky: true, below: 5pt)[#textbook-label(title, framed: true)]
-      #block(inset: (x: 9pt))[#body]
+      #textbook-heading(title, label: true)
+      #body
     ]
   } else if goal {
-    block(width: 100%, breakable: breakable, above: 5pt, below: 9pt,
-      inset: (left: 6pt, right: 5pt, bottom: 3pt), stroke: (left: 0.5pt + primary-color),
+    block(width: 100%, breakable: breakable, above: 8pt, below: 13pt,
+      inset: (x: 9pt, y: 7pt), stroke: (top: 0.5pt + primary-color, bottom: 0.5pt + primary-color),
     )[
-      #block(sticky: true, below: 6pt)[#textbook-label(title, framed: true)]
+      #textbook-heading(title, label: true)
       #body
     ]
   } else if ruled {
-    block(width: 100%, breakable: breakable, above: 7pt, below: 8pt,
-      inset: (top: 5pt, bottom: 5pt),
-      stroke: if variant == "key-point" { (top: 0.5pt + primary-color, bottom: 0.5pt + primary-color) } else { (top: 0.5pt + primary-color) },
+    block(width: 100%, breakable: breakable, above: 11pt, below: 12pt,
+      inset: (top: 8pt, bottom: 7pt, left: 8pt, right: 8pt),
+      stroke: (top: 0.5pt + primary-color, bottom: 0.5pt + primary-color),
     )[
-      #if variant == "key-point" {
-        grid(columns: (auto, 1fr), gutter: 8pt, textbook-label(title), body)
-      } else {
-        block(sticky: true, below: 5pt)[#textbook-label(title)]
-        body
-      }
+      #textbook-heading(title, label: true)
+      #body
     ]
   } else if variant == "solution" {
-    block(width: 100%, breakable: breakable, above: 7pt, below: 8pt)[
-      #block(width: 100%, sticky: true, below: 6pt, inset: (bottom: 4pt), stroke: (bottom: 0.5pt + primary-color))[
+    block(width: 100%, breakable: breakable, above: 13pt, below: 13pt)[
+      #block(width: 100%, sticky: true, below: 8pt, inset: (top: 3pt, bottom: 6pt), stroke: (bottom: 0.5pt + primary-color))[
         #text(font: sans-font, weight: "bold", fill: heading-color)[#title]
       ]
       #body
     ]
   } else {
-    block(width: 100%, breakable: breakable, above: 6pt, below: 6pt)[
-      #if variant == "caution" {
-        grid(columns: (auto, 1fr), gutter: 8pt, textbook-label(title), body)
-      } else {
-        block(sticky: true, below: 5pt)[#text(font: sans-font, weight: "bold", fill: heading-color)[#title]]
-        body
-      }
+    block(width: 100%, breakable: breakable, above: 12pt, below: 12pt)[
+      #textbook-heading(title)
+      #body
     ]
   }
 }

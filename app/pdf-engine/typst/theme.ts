@@ -4,6 +4,10 @@ import { renderPrepSchoolTheme } from "./prep-school-theme";
 
 export const TYPST_THEME_LABELS: Record<TypstThemeId, string> = {
   "prep-school-blue": "予備校テキスト / ブルー",
+  "prep-school-green": "予備校テキスト / グリーン",
+  "prep-school-burgundy": "予備校テキスト / バーガンディ",
+  "prep-school-purple": "予備校テキスト / パープル",
+  "prep-school-brown": "予備校テキスト / ブラウン",
   "standard-blue": "Standard Blue",
   "standard-green": "Standard Green",
   "modern-navy": "Modern Navy",
@@ -15,6 +19,14 @@ export const TYPST_THEME_LABELS: Record<TypstThemeId, string> = {
   "editorial-plum": "Editorial Study / プラム",
   "editorial-ochre": "Editorial Study / オーカー",
 };
+
+export const PREP_SCHOOL_TYPST_THEME_IDS = [
+  "prep-school-blue",
+  "prep-school-green",
+  "prep-school-burgundy",
+  "prep-school-purple",
+  "prep-school-brown",
+] as const satisfies readonly TypstThemeId[];
 
 export const EDITORIAL_TYPST_THEME_IDS = [
   "editorial-terracotta",
@@ -46,6 +58,22 @@ const THEMES: Record<TypstThemeId, TypstThemeTokens> = {
   "prep-school-blue": {
     layout: "prep-school", primary: "#52799b", secondary: "#e4e9ed",
     text: "#151515", muted: "#454545", surface: "#ffffff", heading: "#173955",
+  },
+  "prep-school-green": {
+    layout: "prep-school", primary: "#48765e", secondary: "#e5ece7",
+    text: "#151515", muted: "#454545", surface: "#ffffff", heading: "#244a35",
+  },
+  "prep-school-burgundy": {
+    layout: "prep-school", primary: "#8d4b5c", secondary: "#efe5e8",
+    text: "#151515", muted: "#454545", surface: "#ffffff", heading: "#622b3b",
+  },
+  "prep-school-purple": {
+    layout: "prep-school", primary: "#76618e", secondary: "#ece7f0",
+    text: "#151515", muted: "#454545", surface: "#ffffff", heading: "#4d3864",
+  },
+  "prep-school-brown": {
+    layout: "prep-school", primary: "#8d6a43", secondary: "#eee8df",
+    text: "#151515", muted: "#454545", surface: "#ffffff", heading: "#5e4328",
   },
   "standard-blue": {
     layout: "classic",
@@ -138,6 +166,10 @@ const THEMES: Record<TypstThemeId, TypstThemeTokens> = {
     heading: "#1c1914",
   },
 };
+
+export function isPrepSchoolTheme(themeId: TypstThemeId) {
+  return THEMES[themeId]?.layout === "prep-school";
+}
 
 export function typstThemeFigurePalette(themeId: TypstThemeId) {
   const theme = THEMES[themeId];
@@ -490,7 +522,7 @@ function renderEditorialTypstTheme(theme: TypstThemeTokens, settings: StudioSett
 
 export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings) {
   const theme = THEMES[themeId];
-  if (theme.layout === "prep-school") return renderPrepSchoolTheme(settings);
+  if (theme.layout === "prep-school") return renderPrepSchoolTheme(settings, theme);
   if (theme.layout === "editorial") return renderEditorialTypstTheme(theme, settings);
   const fontSizePt = settings.fontSize;
   const headingScale = Math.max(1.18, settings.headingSize / Math.max(1, settings.fontSize));
@@ -683,3 +715,4 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
 ]
 `;
 }
+

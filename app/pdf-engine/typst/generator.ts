@@ -1,7 +1,7 @@
 import { buildTypstAst, collectExpectedText } from "./ast";
 import { generateFigureSvg } from "./figure-svg";
 import { latexToTypstMath } from "./math-adapter";
-import { renderTypstTheme, typstThemeFigurePalette } from "./theme";
+import { renderTypstTheme, typstThemeFigurePalette, isPrepSchoolTheme } from "./theme";
 import { prepSchoolFigureSvg } from "./prep-school-theme";
 import type {
   GeneratedTypstProject,
@@ -372,7 +372,7 @@ function renderDocumentBody(nodes: TypstBlockNode[], pairFigures = false) {
 
 export function generateTypstProject(request: TypstCompileRequest): GeneratedTypstProject {
   const ast = buildTypstAst(request.markdown, request.outputMode, request.includeQuestionInAnswer);
-  const body = renderDocumentBody(ast.children, request.theme === "prep-school-blue");
+  const body = renderDocumentBody(ast.children, isPrepSchoolTheme(request.theme));
   const source = [
     documentVariables(ast),
     renderTypstTheme(request.theme, request.settings),
@@ -387,9 +387,9 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
   const assets = collectFigures(ast.children).map((figure) => {
     try {
       const rawSvg = generateFigureSvg(figure, request.mermaidAssets);
-      const svg = request.theme === "prep-school-blue"
+      const svg = isPrepSchoolTheme(request.theme)
         ? prepSchoolFigureSvg(rawSvg, compactAssets.has(figure.assetPath),
-          ["data-chart", "bar-chart", "line-chart"].includes(figure.figureType) && figure.params.type !== "line")
+          ["data-chart", "bar-chart", "line-chart"].includes(figure.figureType) && figure.params.type !== "line", figurePalette?.secondary)
         : rawSvg;
       return {
         path: figure.assetPath,

@@ -1,3 +1,4 @@
+import { MATH_C_TYPES } from "../app/math-c/syntax";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { compileWithTypstCli, getTypstCompilerStatus, TypstCompilerError } from "../server/typst-cli-compiler";
@@ -53,7 +54,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
     try {
       const status = await getTypstCompilerStatus();
-      json(response, 200, { ...status, supportedThemes: Object.keys(TYPST_THEME_LABELS) });
+      json(response, 200, { ...status, supportedThemes: Object.keys(TYPST_THEME_LABELS), supportedFigures: [...MATH_C_TYPES] });
     } catch (error) {
       const payload = error instanceof TypstCompilerError ? error.payload : typstErrorPayload(error, "compiler");
       json(response, 503, { available: false, ...payload });

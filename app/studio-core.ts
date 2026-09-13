@@ -1,3 +1,4 @@
+import { MATH_C_TYPES } from "./math-c/syntax";
 export type Metadata = {
   lesson_id: string;
   title: string;
@@ -376,6 +377,7 @@ const CONDITIONAL_BLOCKS = new Set([
 ]);
 
 const FIGURE_TYPES = new Set([
+  ...MATH_C_TYPES,
   "mermaid",
   "function-graph",
   "data-chart",

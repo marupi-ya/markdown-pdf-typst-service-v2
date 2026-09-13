@@ -1,3 +1,4 @@
+import { MATH_C_TYPES, parseMathCConfig, mathCConfigToSvg } from "../../math-c/geometry";
 import {
   evaluatePolynomialFormula,
   parseBoxPlotConfig,
@@ -335,6 +336,11 @@ export function sanitizeMermaidSvg(svg: string) {
 }
 
 export function generateFigureSvg(node: FigureNode, mermaidAssets: Record<string, string> = {}) {
+  if (MATH_C_TYPES.has(node.figureType)) {
+    const result = parseMathCConfig(node.figureType, node.raw, node.sourceLine);
+    if (!result.ok) throw new Error(result.errors.join(" "));
+    return mathCConfigToSvg(result.config);
+  }
   if (node.figureType === "mermaid") {
     const supplied = mermaidAssets[node.assetPath];
     if (!supplied) throw new Error("Mermaid図のSVG生成が完了していません。");

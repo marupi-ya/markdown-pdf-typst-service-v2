@@ -609,6 +609,7 @@ export type FunctionGraphGuide = {
 export type FunctionGraphConfig = {
   xRange: [number, number];
   yRange: [number, number];
+  axisScale: "auto" | "equal";
   xTick?: number;
   yTick?: number;
   showGrid: boolean;
@@ -617,6 +618,27 @@ export type FunctionGraphConfig = {
   points: FunctionGraphPoint[];
   guides: FunctionGraphGuide[];
 };
+
+export function functionGraphPlotBounds(
+  xRange: [number, number],
+  yRange: [number, number],
+  axisScale: "auto" | "equal",
+  frame: { left: number; right: number; top: number; bottom: number },
+) {
+  if (axisScale === "auto") return frame;
+  const unitsPerPixel = Math.min(
+    (frame.right - frame.left) / (xRange[1] - xRange[0]),
+    (frame.bottom - frame.top) / (yRange[1] - yRange[0]),
+  );
+  const width = (xRange[1] - xRange[0]) * unitsPerPixel;
+  const height = (yRange[1] - yRange[0]) * unitsPerPixel;
+  return {
+    left: (frame.left + frame.right - width) / 2,
+    right: (frame.left + frame.right + width) / 2,
+    top: (frame.top + frame.bottom - height) / 2,
+    bottom: (frame.top + frame.bottom + height) / 2,
+  };
+}
 
 export type FigureConfigResult<T> =
   | { ok: true; config: T }
@@ -759,6 +781,10 @@ export function parseFunctionGraphConfig(
   const errors: string[] = [];
   const xRange = finitePair(params["x-range"], [-5, 5], "x-range", errors);
   const yRange = finitePair(params["y-range"], [-5, 5], "y-range", errors);
+  const axisScale = (params["axis-scale"] ?? "auto").trim().toLowerCase();
+  if (axisScale !== "auto" && axisScale !== "equal") {
+    errors.push("axis-scaleはautoまたはequalを指定してください。");
+  }
 
   const parseTick = (
     value: string | undefined,
@@ -911,6 +937,7 @@ export function parseFunctionGraphConfig(
     config: {
       xRange,
       yRange,
+      axisScale: axisScale as "auto" | "equal",
       xTick,
       yTick,
       showGrid,

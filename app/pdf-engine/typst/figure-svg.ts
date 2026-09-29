@@ -1,6 +1,7 @@
 import { MATH_C_TYPES, parseMathCConfig, mathCConfigToSvg } from "../../math-c/geometry";
 import {
   evaluatePolynomialFormula,
+  functionGraphPlotBounds,
   parseBoxPlotConfig,
   parseCircleConfig,
   parseFunctionGraphConfig,
@@ -53,11 +54,13 @@ function finiteTicks(min: number, max: number, step: number, limit = 30) {
 function functionGraph(node: FigureNode) {
   const result = parseFunctionGraphConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { xRange, yRange, xTick, yTick, showGrid, series, points, guides } = result.config;
-  const left = 54;
-  const right = 615;
-  const top = 30;
-  const bottom = 312;
+  const { xRange, yRange, axisScale, xTick, yTick, showGrid, series, points, guides } = result.config;
+  const { left, right, top, bottom } = functionGraphPlotBounds(
+    xRange,
+    yRange,
+    axisScale,
+    { left: 54, right: 615, top: 30, bottom: 312 },
+  );
   const sx = (value: number) => left + (value - xRange[0]) / (xRange[1] - xRange[0]) * (right - left);
   const sy = (value: number) => bottom - (value - yRange[0]) / (yRange[1] - yRange[0]) * (bottom - top);
   const xTicks = finiteTicks(xRange[0], xRange[1], xTick ?? (xRange[1] - xRange[0]) / 8);
@@ -73,19 +76,51 @@ function functionGraph(node: FigureNode) {
   const curves = series.map((item, seriesIndex) => {
     const segments: string[] = [];
     let current: string[] = [];
-    for (let index = 0; index <= 360; index += 1) {
+    const samples = Array.from({ length: 361 }, (_, index) => {
       const x = xRange[0] + (xRange[1] - xRange[0]) * index / 360;
-      const y = evaluatePolynomialFormula(item.formula, x);
-      if (!Number.isFinite(y) || y < yRange[0] - (yRange[1] - yRange[0]) || y > yRange[1] + (yRange[1] - yRange[0])) {
+      return { x, y: evaluatePolynomialFormula(item.formula, x) };
+    });
+    for (let index = 1; index < samples.length; index += 1) {
+      const start = samples[index - 1];
+      const end = samples[index];
+      if (!Number.isFinite(start.y) || !Number.isFinite(end.y)) {
         if (current.length > 1) segments.push(current.join(" "));
         current = [];
-      } else current.push(`${sx(x).toFixed(2)},${sy(y).toFixed(2)}`);
+        continue;
+      }
+      const delta = end.y - start.y;
+      let enter = 0;
+      let exit = 1;
+      if (delta === 0) {
+        if (start.y < yRange[0] || start.y > yRange[1]) continue;
+      } else {
+        const atMin = (yRange[0] - start.y) / delta;
+        const atMax = (yRange[1] - start.y) / delta;
+        enter = Math.max(0, Math.min(atMin, atMax));
+        exit = Math.min(1, Math.max(atMin, atMax));
+        if (enter > exit) {
+          if (current.length > 1) segments.push(current.join(" "));
+          current = [];
+          continue;
+        }
+      }
+      const from = `${sx(start.x + (end.x - start.x) * enter).toFixed(2)},${sy(start.y + delta * enter).toFixed(2)}`;
+      const to = `${sx(start.x + (end.x - start.x) * exit).toFixed(2)},${sy(start.y + delta * exit).toFixed(2)}`;
+      if (current.length && current[current.length - 1] !== from) {
+        if (current.length > 1) segments.push(current.join(" "));
+        current = [];
+      }
+      if (!current.length) current.push(from);
+      if (from !== to) current.push(to);
     }
     if (current.length > 1) segments.push(current.join(" "));
     const dash = item.style === "dashed" ? "8 5" : item.style === "dotted" ? "2 5" : "none";
     return segments.map((segment) => `<polyline class="line" stroke="${COLORS[seriesIndex % COLORS.length]}" stroke-dasharray="${dash}" points="${segment}"/>`).join("\n");
   }).join("\n");
-  const guideLines = guides.map((guide) => guide.axis === "x"
+  const guideLines = guides.filter((guide) => guide.axis === "x"
+    ? guide.value >= xRange[0] && guide.value <= xRange[1]
+    : guide.value >= yRange[0] && guide.value <= yRange[1]
+  ).map((guide) => guide.axis === "x"
     ? `<line x1="${sx(guide.value)}" y1="${top}" x2="${sx(guide.value)}" y2="${bottom}" stroke="#8a99a6" stroke-dasharray="5 5"/>`
     : `<line x1="${left}" y1="${sy(guide.value)}" x2="${right}" y2="${sy(guide.value)}" stroke="#8a99a6" stroke-dasharray="5 5"/>`
   ).join("\n");

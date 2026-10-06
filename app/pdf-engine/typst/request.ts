@@ -1,5 +1,6 @@
 import type { StudioSettings } from "../../theme-settings";
 import type { TypstCompileRequest, TypstThemeId } from "./types";
+import { validateMaterialAssets } from "../../material-assets";
 
 const THEMES = new Set<TypstThemeId>([
   "prep-school-blue",
@@ -81,5 +82,5 @@ export function validateTypstCompileRequest(value: unknown): TypstCompileRequest
     }
   }
 
-  return request as TypstCompileRequest;
+  return {...request,materialAssets:validateMaterialAssets(request.materialAssets)} as TypstCompileRequest;
 }

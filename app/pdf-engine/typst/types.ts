@@ -1,5 +1,7 @@
 import type { Metadata, OutputMode } from "../../studio-core";
 import type { StudioSettings } from "../../theme-settings";
+import type { Mapping } from "../../math-c/syntax";
+import type { MaterialAsset } from "../../extensions/registry";
 
 export type TypstThemeId =
   | "prep-school-blue"
@@ -19,6 +21,7 @@ export type TypstThemeId =
   | "editorial-ochre";
 
 export type TypstInlineNode =
+  | { type:"InlineExtension"; extensionType:string; config:Mapping; sourceLine:number }
   | { type: "InlineText"; value: string }
   | { type: "Strong"; children: TypstInlineNode[] }
   | { type: "Emphasis"; children: TypstInlineNode[] }
@@ -46,9 +49,12 @@ type TypstNodeBase = {
   id: string;
   sourceLine: number;
   policy: TypstBreakPolicy;
+  semantic?: { exerciseId?: string; solutionFor?: string };
 };
 
 export type TypstBlockNode =
+  | (TypstNodeBase & { type:"Extension"; extensionType:string; config:Mapping; raw:string; outputMode:"complete"|"questions"|"answers" })
+  | (TypstNodeBase & { type:"Fallback"; extensionType:string; raw:string; message:string })
   | (TypstNodeBase & { type: "Heading"; level: number; children: TypstInlineNode[] })
   | (TypstNodeBase & { type: "Paragraph"; children: TypstInlineNode[] })
   | (TypstNodeBase & { type: "DisplayMath"; latex: string })
@@ -85,6 +91,7 @@ export type TypstCompileRequest = {
   settings: StudioSettings;
   theme: TypstThemeId;
   mermaidAssets?: Record<string, string>;
+  materialAssets?:Record<string,MaterialAsset>;
 };
 
 export type TypstSourceMapEntry = {
@@ -97,7 +104,8 @@ export type TypstSourceMapEntry = {
 export type TypstProjectAsset = {
   path: string;
   contents: string;
-  mediaType: "image/svg+xml";
+  mediaType: MaterialAsset["mimeType"];
+  encoding?:"base64";
 };
 
 export type GeneratedTypstProject = {
@@ -106,7 +114,9 @@ export type GeneratedTypstProject = {
   sourceMap: TypstSourceMapEntry[];
   assets: TypstProjectAsset[];
   expectedText: string[];
+  warnings:TypstGenerationWarning[];
 };
+export type TypstGenerationWarning={code:string;message:string;sourceLine:number;nodeType:string};
 
 export type TypstCompileErrorPayload = {
   stage: "request" | "markdown" | "typst-generation" | "compiler" | "validation";

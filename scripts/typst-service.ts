@@ -1,4 +1,6 @@
 import { MATH_C_TYPES } from "../app/math-c/syntax";
+import { extensionRegistry } from "../app/extensions";
+import { TYPST_MAX_REQUEST_BYTES } from "../app/material-assets";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { compileWithTypstCli, getTypstCompilerStatus, TypstCompilerError } from "../server/typst-cli-compiler";
@@ -10,7 +12,7 @@ const port = Number(process.env.PORT ?? 8789);
 // to every interface. Keep localhost as the safe default for local use.
 const host = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const token = process.env.TYPST_SERVICE_TOKEN ?? "";
-const MAX_BODY_BYTES = 2_500_000;
+const MAX_BODY_BYTES = TYPST_MAX_REQUEST_BYTES;
 
 function json(response: ServerResponse, status: number, value: unknown) {
   response.writeHead(status, {
@@ -35,7 +37,7 @@ async function readJson(request: IncomingMessage) {
   for await (const chunk of request) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += bytes.length;
-    if (total > MAX_BODY_BYTES) throw Object.assign(new Error("PDF生成リクエストが2.5MBの上限を超えています。"), { code: "REQUEST_TOO_LARGE" });
+    if (total > MAX_BODY_BYTES) throw Object.assign(new Error("PDF生成リクエストが14MBの上限を超えています。"), { code: "REQUEST_TOO_LARGE" });
     chunks.push(bytes);
   }
   try {
@@ -54,7 +56,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
     try {
       const status = await getTypstCompilerStatus();
-      json(response, 200, { ...status, supportedThemes: Object.keys(TYPST_THEME_LABELS), supportedFigures: [...MATH_C_TYPES] });
+      json(response, 200, { ...status, supportedThemes: Object.keys(TYPST_THEME_LABELS), supportedFigures: [...MATH_C_TYPES,...extensionRegistry.list().filter(item=>item.kind==="figure").map(item=>item.type)], supportedExtensions: Object.fromEntries(extensionRegistry.list().map(item=>[item.type,item.version])) });
     } catch (error) {
       const payload = error instanceof TypstCompilerError ? error.payload : typstErrorPayload(error, "compiler");
       json(response, 503, { available: false, ...payload });
@@ -75,6 +77,7 @@ const server = createServer(async (request, response) => {
         "x-typst-version": result.typstVersion,
         "x-pdf-pages": String(result.pageCount),
         "x-text-validation": result.textValidation.performed ? `${result.textValidation.matchedSamples}/${result.textValidation.checkedSamples}` : "unavailable",
+        "x-studio-warnings": encodeURIComponent(JSON.stringify(result.warnings.slice(0,6).map(warning=>({...warning,message:warning.message.slice(0,110)})))),
       });
       response.end(result.pdf);
     } catch (error) {

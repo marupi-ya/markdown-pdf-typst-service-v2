@@ -1,4 +1,7 @@
-import { MATH_C_TYPES } from "./math-c/syntax";
+import { MATH_C_SAMPLE } from "./math-c/sample";
+import { MATH_C_TYPES, parseMathCConfig } from "./math-c/geometry";
+import { extensionRegistry } from "./extensions";
+import { inspectExtensionDocument, type ExtensionEntry } from "./extensions/document";
 export type Metadata = {
   lesson_id: string;
   title: string;
@@ -16,6 +19,7 @@ export type BlockType =
   | "math"
   | "code"
   | "figure"
+  | "content"
   | "callout"
   | "page-break"
   | "hr";
@@ -376,7 +380,7 @@ const CONDITIONAL_BLOCKS = new Set([
   "solution",
 ]);
 
-const FIGURE_TYPES = new Set([
+export const FIGURE_TYPES = new Set([
   ...MATH_C_TYPES,
   "mermaid",
   "function-graph",
@@ -626,12 +630,12 @@ export function functionGraphPlotBounds(
   frame: { left: number; right: number; top: number; bottom: number },
 ) {
   if (axisScale === "auto") return frame;
-  const unitsPerPixel = Math.min(
+  const pixelsPerUnit = Math.min(
     (frame.right - frame.left) / (xRange[1] - xRange[0]),
     (frame.bottom - frame.top) / (yRange[1] - yRange[0]),
   );
-  const width = (xRange[1] - xRange[0]) * unitsPerPixel;
-  const height = (yRange[1] - yRange[0]) * unitsPerPixel;
+  const width = (xRange[1] - xRange[0]) * pixelsPerUnit;
+  const height = (yRange[1] - yRange[0]) * pixelsPerUnit;
   return {
     left: (frame.left + frame.right - width) / 2,
     right: (frame.left + frame.right + width) / 2,
@@ -2168,9 +2172,11 @@ function baseParse(source: string, allowFrontmatter = true) {
             params: figureType === "mermaid" ? {} : parseParams(raw),
             raw,
             breakPolicy: "atomic",
-            renderStatus: FIGURE_TYPES.has(figureType) ? "normal" : "fallback",
+            renderStatus: FIGURE_TYPES.has(figureType) || extensionRegistry.get(figureType,"figure") ? "normal" : "fallback",
           }),
         );
+      } else if (/^content\s+[\w-]+$/u.test(info)) {
+        blocks.push(makeBlock("content",lineNumber,end+1,"",{ blockName:info.slice(8).trim(), raw, breakPolicy:"flow" }));
       } else {
         blocks.push(
           makeBlock("code", lineNumber, end + 1, raw, {
@@ -2301,6 +2307,7 @@ function validateDocument(parsed: ParsedDocument) {
   const issues = [...parsed.issues];
   const exercises = new Map<string, StudioBlock>();
   const solutions: StudioBlock[] = [];
+  for(const diagnostic of inspectExtensionDocument(extensionEntries(parsed.blocks)).diagnostics) issues.push({id:`extension-reference-${diagnostic.sourceLine}-${issues.length}`,severity:"warning",line:diagnostic.sourceLine,blockType:"content",title:diagnostic.code,reason:diagnostic.message,fix:"IDと明示的な参照先を確認してください。原文は変更しません。"});
 
   for (const block of flattenStudioBlocks(parsed.blocks)) {
     if (block.type === "callout" && block.blockName && block.attributes) {
@@ -2367,7 +2374,35 @@ function validateDocument(parsed: ParsedDocument) {
         });
       }
     }
+    if (["paragraph","heading","table","list"].includes(block.type)) {
+      for (const match of block.markdown.matchAll(/\{\{([a-z][\w-]*):([^{}]+)\}\}/gu)) {
+        const definition=extensionRegistry.get(match[1]);
+        if (!definition?.inlineProperty) continue;
+        const line=block.startLine+block.markdown.slice(0,match.index).split("\n").length-1;
+        const result=extensionRegistry.parse(definition.type,`${definition.inlineProperty}: '${match[2]}'`,line);
+        for (const diagnostic of result.diagnostics) issues.push({id:`inline-${block.id}-${match.index}-${diagnostic.code}`,severity:diagnostic.severity==="fatal"?"error":"warning",line,blockType:"inline",title:diagnostic.code,reason:diagnostic.message,fix:"正規記法を確認してください。原稿はそのまま保持します。"});
+      }
+    }
+    if (block.type === "content" || (block.type === "figure" && extensionRegistry.get(block.figureType ?? "", "figure"))) {
+      const type = block.type === "content" ? block.blockName! : block.figureType!;
+      const result = extensionRegistry.parse(type,block.raw ?? "",block.startLine);
+      for (const [index, diagnostic] of result.diagnostics.entries()) issues.push({
+        id:`extension-${block.id}-${index}`, severity:diagnostic.severity === "fatal" ? "error" : diagnostic.severity === "info" ? "info" : "warning",
+        line:diagnostic.sourceLine, blockType:block.type, title:`${type}: ${diagnostic.code}`, reason:diagnostic.message,
+        fix:"記法ガイドの項目・型・参照先を確認してください。原稿の意味は自動変更しません。",
+      });
+      continue;
+    }
     if (block.type === "figure") {
+      if (MATH_C_TYPES.has(block.figureType ?? "")) {
+        const result = parseMathCConfig(block.figureType!, block.raw ?? "", block.startLine);
+        if (!result.ok) issues.push({
+          id: `figure-math-c-${block.startLine}`, severity: "warning", line: block.startLine,
+          blockType: "figure", title: `${block.figureType}の記法を確認してください`,
+          reason: result.errors.join(" "), fix: "表示された行・項目を修正してください。数学C記法ガイドを参照できます。",
+          history: ["図表設定の検証", "代替表示へ切替"],
+        });
+      }
       if (!FIGURE_TYPES.has(block.figureType ?? "")) {
         issues.push({
           id: `figure-unknown-${block.startLine}`,
@@ -2858,10 +2893,37 @@ export function createRenderDocument(
 
   return {
     ...parsed,
-    blocks,
+    blocks: includeReferencedSources(parsed.blocks,blocks),
     outputMode,
     includeQuestionInAnswer,
   };
+}
+
+function extensionEntries(blocks:StudioBlock[]):ExtensionEntry[] {
+  const result:ExtensionEntry[]=[];
+  const visit=(block:StudioBlock,rootId:string)=>{
+    if(block.type==="content"||block.type==="figure") result.push({id:block.id,rootId,type:block.blockName??block.figureType??"",raw:block.raw,sourceLine:block.startLine});
+    block.children?.forEach(child=>visit(child,rootId));
+  };
+  blocks.forEach(block=>visit(block,block.id));return result;
+}
+/** Answer editions reuse the original source block for explicit references. */
+function includeReferencedSources(original:StudioBlock[],selected:StudioBlock[]) {
+  const all=inspectExtensionDocument(extensionEntries(original));
+  const retained=new Set(selected.map(block=>block.originBlockId??block.id));
+  const added:StudioBlock[]=[];
+  let pending=selected;
+  for(let step=0;step<original.length && pending.length;step++) {
+    const refs=inspectExtensionDocument(extensionEntries(pending)).references;
+    pending=[];
+    for(const ref of refs) {
+      const rootId=all.anchors[ref.key]?.rootId;
+      if(!rootId || retained.has(rootId))continue;
+      const source=original.find(block=>block.id===rootId);
+      if(source){retained.add(rootId);added.push(source);pending.push(source);}
+    }
+  }
+  return [...added,...selected];
 }
 
 function isInternalTextHeading(source: string) {
@@ -4276,6 +4338,7 @@ export function sanitizeFilename(
 }
 
 export const SAMPLES = {
+  mathC: { label: "数学C｜ベクトル・複素数・領域・立体", source: MATH_C_SAMPLE },
   math: {
     label: "数学｜二次関数",
     source: `---

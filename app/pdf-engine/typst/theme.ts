@@ -373,7 +373,7 @@ function renderEditorialTypstTheme(theme: TypstThemeTokens, settings: StudioSett
   above: 6pt,
   below: 7pt,
   inset: (left: 9pt),
-  stroke: (left: 1.4pt + primary-color),
+  stroke: none,
   align(left)[#text(size: ${pt(emphasizedMathSize)}, weight: "medium")[#body]],
 )
 
@@ -382,7 +382,7 @@ function renderEditorialTypstTheme(theme: TypstThemeTokens, settings: StudioSett
   above: 2pt,
   below: ${pt(paragraphGap)},
   inset: (left: 8pt),
-  stroke: (left: 1.2pt + primary-color),
+  stroke: none,
   text(weight: "medium")[#body],
 )
 
@@ -644,6 +644,7 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
   above: 6pt,
   below: 7pt,
   inset: (left: 1.15em, right: 0.4em),
+  stroke: none,
   align(left)[#text(size: ${pt(emphasizedMathSize)})[#body]],
 )
 
@@ -651,6 +652,7 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
   width: 100%,
   above: 1.5pt,
   below: ${pt(paragraphGap)},
+  stroke: none,
   text(weight: "medium")[#body],
 )
 
@@ -715,4 +717,3 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
 ]
 `;
 }
-

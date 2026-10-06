@@ -16,7 +16,7 @@ const SUPPORTED_COMMANDS = new Set([
   "cup", "cap", "setminus", "emptyset", "forall", "exists", "therefore", "because",
   "to", "rightarrow", "leftarrow", "leftrightarrow", "Rightarrow", "Leftarrow", "Leftrightarrow",
   "left", "right", "bigl", "bigr", "Bigl", "Bigr", "begin", "end", "displaystyle", "textstyle",
-  "quad", "qquad", "colon", "angle", "triangle", "perp", "parallel", "degree", "circ", "prime",
+  "quad", "qquad", "colon", "angle", "triangle", "square", "perp", "parallel", "degree", "circ", "prime",
 ]);
 
 const SUPPORTED_ENVIRONMENTS = new Set([
@@ -147,7 +147,7 @@ function normalizeConvertedMath(source: string) {
     .trim();
 }
 
-export function latexToTypstMath(latex: string, sourceLine: number) {
+export function latexToTypstMath(latex: string, sourceLine: number): string {
   if (!latex.trim()) {
     throw new TypstMathAdapterError("空の数式は変換できません。", sourceLine, latex);
   }
@@ -170,7 +170,31 @@ export function latexToTypstMath(latex: string, sourceLine: number) {
   }
 
   try {
-    const converted = normalizeConvertedMath(String(texToTypst(normalizeLatex(latex)).value ?? ""));
+    // The converter silently drops cases even inside an otherwise valid
+    // expression. Protect each case body with a collision-free math atom,
+    // then replace that atom only if the converter retained it exactly once.
+    const replacements: Array<{atom: string; body: string}> = [];
+    const protectedLatex = latex.replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/gu, (_match, body: string) => {
+      const rows = body.split(/\\\\/u).map(row => row.trim()).filter(Boolean);
+      if (!rows.length || rows.length > 80 || /\\(?:begin|end)\{/u.test(body) || replacements.length >= 8) {
+        throw new Error("casesは1〜80行の入れ子なしの式を指定してください。");
+      }
+      let name = `studiocasesplaceholder${replacements.length}`;
+      while (latex.includes(name)) name += "x";
+      const atom = `\\mathrm{${name}}`;
+      replacements.push({atom, body: `cases(${rows.map(row => row.split(/(?<!\\)&/u).map(cell => latexToTypstMath(cell.trim(), sourceLine)).join(" & quad ")).join(", ")})`});
+      return atom;
+    });
+    if (/\\(?:begin|end)\{cases\}/u.test(protectedLatex)) {
+      throw new Error("casesの開始・終了と入れ子を確認してください。");
+    }
+    let converted = normalizeConvertedMath(String(texToTypst(normalizeLatex(protectedLatex)).value ?? ""));
+    for (const replacement of replacements) {
+      const needle = normalizeConvertedMath(String(texToTypst(replacement.atom).value ?? ""));
+      const pieces = needle ? converted.split(needle) : [];
+      if (pieces.length !== 2) throw new Error("casesの内容を保持して変換できませんでした。");
+      converted = pieces[0] + replacement.body + pieces[1];
+    }
     if (!converted || /\\[A-Za-z]+/u.test(converted)) {
       throw new Error("変換後に未解決のコマンドが残りました。");
     }

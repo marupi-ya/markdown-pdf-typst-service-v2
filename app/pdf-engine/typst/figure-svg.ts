@@ -1,3 +1,4 @@
+import { extensionRegistry, assertSafeExtension } from "../../extensions";
 import { MATH_C_TYPES, parseMathCConfig, mathCConfigToSvg } from "../../math-c/geometry";
 import {
   evaluatePolynomialFormula,
@@ -370,7 +371,13 @@ export function sanitizeMermaidSvg(svg: string) {
     .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*')/giu, "");
 }
 
-export function generateFigureSvg(node: FigureNode, mermaidAssets: Record<string, string> = {}) {
+export function generateFigureSvg(node: FigureNode, mermaidAssets: Record<string, string> = {}, context:Partial<import("../../extensions/registry").ExtensionRenderContext>={}) {
+  const extension = extensionRegistry.get(node.figureType,"figure");
+  if (extension) {
+    const parsed = assertSafeExtension(extensionRegistry.parse(node.figureType,node.raw,node.sourceLine));
+    if (!parsed.ok) throw new Error(parsed.diagnostics.map(issue => issue.message).join(" "));
+    return extension.render(parsed.config,{...context,sourceLine:node.sourceLine,outputMode:context.outputMode??"complete",text:xml,inline:xml});
+  }
   if (MATH_C_TYPES.has(node.figureType)) {
     const result = parseMathCConfig(node.figureType, node.raw, node.sourceLine);
     if (!result.ok) throw new Error(result.errors.join(" "));

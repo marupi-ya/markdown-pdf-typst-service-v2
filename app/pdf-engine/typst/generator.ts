@@ -1,8 +1,15 @@
-import { buildTypstAst, collectExpectedText } from "./ast";
+import { buildTypstAst, collectExpectedText, parseTypstInline } from "./ast";
 import { generateFigureSvg } from "./figure-svg";
 import { latexToTypstMath } from "./math-adapter";
 import { renderTypstTheme, typstThemeFigurePalette, isPrepSchoolTheme } from "./theme";
 import { prepSchoolFigureSvg } from "./prep-school-theme";
+import { extensionRegistry } from "../../extensions";
+import { inspectExtensionDocument, type ExtensionEntry } from "../../extensions/document";
+import type { ExtensionAnchor, MaterialAsset } from "../../extensions/registry";
+import { validateMaterialAssets, materialAssetPath } from "../../material-assets";
+import { inspectExtensionResources } from "../../extensions/resources";
+import { inspectSvgViewport } from "../../extensions/layout";
+import { COMMON_LAYOUT_HELPERS, semanticMathLines } from "./layout";
 import type {
   GeneratedTypstProject,
   TypstBlockNode,
@@ -10,14 +17,18 @@ import type {
   TypstDocumentAst,
   TypstInlineNode,
   TypstSourceMapEntry,
+  TypstProjectAsset,
+  TypstGenerationWarning,
 } from "./types";
 
 function typstString(value: string) {
   return JSON.stringify(value.replace(/\u0000/gu, ""));
 }
 
-function marker(node: Pick<TypstBlockNode, "sourceLine" | "type">) {
-  return `// studio-source:${node.sourceLine}:${node.type}`;
+function marker(node: TypstBlockNode) {
+  // Invisible metadata links the actual laid-out PDF page to its source node.
+  // It never adds text to the textbook or changes its content.
+  return `// studio-source:${node.sourceLine}:${node.type}\n#context metadata((studioNode: ${typstString(node.id)}, nodeType: ${typstString(node.type)}, sourceLine: ${node.sourceLine}, page: here().page(), exerciseId: ${node.semantic?.exerciseId ? typstString(node.semantic.exerciseId) : "none"}, solutionFor: ${node.semantic?.solutionFor ? typstString(node.semantic.solutionFor) : "none"}))`;
 }
 
 function renderInlines(nodes: TypstInlineNode[]): string {
@@ -25,6 +36,7 @@ function renderInlines(nodes: TypstInlineNode[]): string {
     if (node.type === "InlineText") return `#text(${typstString(node.value)})`;
     if (node.type === "Strong") return `#strong[${renderInlines(node.children)}]`;
     if (node.type === "Emphasis") return `#emph[${renderInlines(node.children)}]`;
+    if (node.type === "InlineExtension") return extensionRegistry.get(node.extensionType)!.renderInline!(node.config,{sourceLine:node.sourceLine,outputMode:"complete",text:value=>`#text(${typstString(value)})`,inline:value=>`#text(${typstString(value)})`});
     return `$${latexToTypstMath(node.latex, node.sourceLine)}$`;
   }).join("");
 }
@@ -33,6 +45,7 @@ function inlineLength(nodes: TypstInlineNode[]): number {
   return nodes.reduce((total, node) => {
     if (node.type === "InlineText") return total + node.value.length;
     if (node.type === "InlineMath") return total + Math.max(2, node.latex.length * 0.65);
+    if (node.type === "InlineExtension") return total+String(node.config.formula ?? "").length;
     return total + inlineLength(node.children);
   }, 0);
 }
@@ -46,11 +59,17 @@ function inlinePlainText(nodes: TypstInlineNode[]) {
   return nodes.map((node): string => {
     if (node.type === "InlineText") return node.value;
     if (node.type === "InlineMath") return node.latex;
+    if (node.type === "InlineExtension") return String(node.config.formula ?? "");
     return inlinePlainText(node.children);
   }).join("");
 }
 
 type RenderContext = {
+  references?:Record<string,ExtensionAnchor>;
+  assets?:Record<string,MaterialAsset>;
+  assetPaths?:Record<string,string>;
+  resourceFallbacks?:Record<string,string>;
+  outputMode?:"complete"|"questions"|"answers";
   boxVariant?: Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>["variant"];
   conclusion?: boolean;
   finalMath?: boolean;
@@ -77,6 +96,8 @@ function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>) {
   }).map((weight) => `${weight.toFixed(2)}fr`).join(", ");
   return `${marker(node)}
 #block(above: 7pt, below: 8pt)[
+  #set par(justify: false)
+  #set table.cell(breakable: true)
   #table(
     columns: (${columnWidths},),
     inset: (x: 5pt, y: 4pt),
@@ -91,7 +112,7 @@ function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>) {
 ]`;
 }
 
-function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>) {
+function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>, context:RenderContext) {
   const kind = node.type.toLowerCase();
   const conclusionMath = new Set<number>();
   node.children.forEach((child, index) => {
@@ -108,6 +129,7 @@ function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | 
     }
   }
   const body = node.children.map((child, index) => renderBlock(child, {
+    ...context,
     boxVariant: node.variant,
     conclusion: node.variant === "solution" && isConclusionParagraph(child),
     finalMath: node.variant === "solution" && conclusionMath.has(index),
@@ -125,6 +147,11 @@ function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | 
 }
 
 function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string {
+  if (node.type === "Extension") {
+    const definition = extensionRegistry.get(node.extensionType,"content")!;
+    return `${marker(node)}\n${definition.render(node.config,{sourceLine:node.sourceLine,outputMode:node.outputMode,references:context.references,text:value => `#text(${typstString(value)})`,inline:value => renderInlines(parseTypstInline(value,node.sourceLine))})}`;
+  }
+  if (node.type === "Fallback") return `${marker(node)}\n#block(breakable: true)[#strong[#text(${typstString(node.extensionType)})：${renderInlines([{type:"InlineText",value:node.message}])}]\n#raw(${typstString(node.raw)}, block:true)]`;
   if (node.type === "Heading") {
     return `${marker(node)}\n#heading(level: ${node.level})[${renderInlines(node.children)}]`;
   }
@@ -134,14 +161,16 @@ function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string 
   }
   if (node.type === "DisplayMath") {
     const math = latexToTypstMath(node.latex, node.sourceLine);
+    const lines = semanticMathLines(node.latex);
+    const wrapped = lines ? `, wrapped: [$ ${lines.map(line => latexToTypstMath(line,node.sourceLine)).join(" \\\n ")} $]` : "";
     if (context.finalMath) {
       return `${marker(node)}
-#studio-final-display-math[$ ${math} $]`;
+#studio-final-display-math[#studio-fit-math(source-line: ${node.sourceLine}${wrapped})[$ ${math} $]]`;
     }
     const emphasis = context.boxVariant === "definition";
     return `${marker(node)}
 #studio-display-math(
-  [$ ${math} $],
+  [#studio-fit-math(source-line: ${node.sourceLine}${wrapped})[$ ${math} $]],
   emphasis: ${emphasis ? "true" : "false"},
 )`;
   }
@@ -152,10 +181,13 @@ function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string 
   }
   if (node.type === "Table") return renderTable(node);
   if (["Problem", "Answer", "Explanation", "Point", "Example", "Warning"].includes(node.type)) {
-    return renderBox(node as Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>);
+    return renderBox(node as Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>,context);
   }
   if (node.type === "Figure") {
+    const definition=extensionRegistry.get(node.figureType,"figure");
+    if(context.resourceFallbacks?.[node.id])return `${marker(node)}\n#block(breakable:true)[#strong[#text(${typstString(context.resourceFallbacks[node.id])})]\n#raw(${typstString(node.raw)},block:true)]`;
     const caption = node.caption.length ? `[${renderInlines(node.caption)}]` : "none";
+    if(definition?.renderPdf){const parsed=extensionRegistry.parse(node.figureType,node.raw,node.sourceLine);const width=Math.min(Number(parsed.config.width??94),Number(parsed.config.maxWidth??100));const body=definition.renderPdf(parsed.config,{sourceLine:node.sourceLine,outputMode:context.outputMode??"complete",references:context.references,assets:context.assets,assetPaths:context.assetPaths,assetPath:node.assetPath,text:value=>`#text(${typstString(value)})`,inline:value=>renderInlines(parseTypstInline(value,node.sourceLine))});return `${marker(node)}\n#studio-figure([${body}],width:${width}%,caption:${caption})`;}
     const width = node.figureType === "triangle" || node.figureType === "circle"
       ? "72%"
       : node.figureType === "number-line" || node.figureType === "sign-chart"
@@ -338,7 +370,7 @@ function figurePairStarts(nodes: TypstBlockNode[]) {
   return starts;
 }
 
-function renderDocumentBody(nodes: TypstBlockNode[], pairFigures = false) {
+function renderDocumentBody(nodes: TypstBlockNode[], pairFigures = false, context:RenderContext={}) {
   const paired = new Map<number, string>();
   const consumed = new Set<number>();
   if (pairFigures) {
@@ -348,14 +380,17 @@ function renderDocumentBody(nodes: TypstBlockNode[], pairFigures = false) {
       const [a, b, c, d] = nodes.slice(i, i + 4);
       paired.set(i, `#block(width: 100%, breakable: false)[
         #grid(columns: (1fr, 1fr), gutter: 12pt,
-          [${renderBlock(a)}\n${renderBlock(b)}],
-          [${renderBlock(c)}\n${renderBlock(d)}],
+          [${renderBlock(a,context)}\n${renderBlock(b,context)}],
+          [${renderBlock(c,context)}\n${renderBlock(d,context)}],
         )
       ]`);
       consumed.add(i + 1); consumed.add(i + 2); consumed.add(i + 3);
     }
   }
+  const tailPair = nodes.length >= 2 && nodes.at(-1)?.type === "Paragraph" && inlineLength((nodes.at(-1) as Extract<TypstBlockNode,{type:"Paragraph"}>).children) < 100 && nodes.at(-2)?.type === "Figure" ? nodes.length-2 : -1;
   return nodes.map((node, index) => {
+    if (index === tailPair+1 && tailPair >= 0) return "";
+    if (index === tailPair) return `#block(breakable:false)[${renderBlock(node,context)}\n${renderBlock(nodes[index+1],context)}]`;
     if (consumed.has(index)) return "";
     if (paired.has(index)) return paired.get(index)!;
     // Textbook pages flow by actual content height; retain explicit PageBreak nodes.
@@ -366,16 +401,31 @@ function renderDocumentBody(nodes: TypstBlockNode[], pairFigures = false) {
         : startsBalancedAnswerPage(nodes, index)
           ? "// studio-semantic-break:balanced-answer-run\n#pagebreak()\n"
           : "";
-    return `${sectionBreak}${renderBlock(node)}`;
+    return `${sectionBreak}${renderBlock(node,context)}`;
   }).join("\n\n");
 }
 
 export function generateTypstProject(request: TypstCompileRequest): GeneratedTypstProject {
   const ast = buildTypstAst(request.markdown, request.outputMode, request.includeQuestionInAnswer);
-  const body = renderDocumentBody(ast.children, isPrepSchoolTheme(request.theme));
+  const entries:ExtensionEntry[]=[];
+  const visit=(node:TypstBlockNode)=>{
+    if(node.type==="Extension")entries.push({id:node.id,type:node.extensionType,config:node.config,sourceLine:node.sourceLine});
+    else if(node.type==="Figure")entries.push({id:node.id,type:node.figureType,raw:node.raw,sourceLine:node.sourceLine});
+    if("children" in node && ["Problem","Answer","Explanation","Point","Example","Warning"].includes(node.type))(node.children as TypstBlockNode[]).forEach(visit);
+  };
+  ast.children.forEach(visit);
+  const materialAssets=validateMaterialAssets(request.materialAssets);
+  const assetPaths=Object.fromEntries(Object.entries(materialAssets).map(([key,asset])=>[key,materialAssetPath(asset)]));
+  const resources=inspectExtensionResources(entries,materialAssets);
+  const resourceFallbacks=Object.fromEntries(resources.filter(issue=>issue.severity==="error").map(issue=>[issue.ownerId,issue.message]));
+  const warnings:TypstGenerationWarning[]=resources.map(issue=>({code:issue.code,message:issue.message,sourceLine:issue.sourceLine,nodeType:"Figure"}));
+  const references=inspectExtensionDocument(entries.filter(entry=>!resourceFallbacks[entry.id])).anchors;
+  const context:RenderContext={references,assets:materialAssets,assetPaths,resourceFallbacks,outputMode:request.outputMode};
+  const body = renderDocumentBody(ast.children, isPrepSchoolTheme(request.theme),context);
   const source = [
     documentVariables(ast),
     renderTypstTheme(request.theme, request.settings),
+    COMMON_LAYOUT_HELPERS,
     request.settings.includeCover ? cover() : "",
     body,
     "",
@@ -384,16 +434,19 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
   const figurePalette = typstThemeFigurePalette(request.theme);
   const compactAssets = new Set(figurePairStarts(ast.children).flatMap(i => [i + 1, i + 3]).map(i =>
     (ast.children[i] as Extract<TypstBlockNode, { type: "Figure" }>).assetPath));
-  const assets = collectFigures(ast.children).map((figure) => {
+  const assets:TypstProjectAsset[] = collectFigures(ast.children).map((figure) => {
     try {
-      const rawSvg = generateFigureSvg(figure, request.mermaidAssets);
-      const svg = isPrepSchoolTheme(request.theme)
+      const nativeFigure=!!extensionRegistry.get(figure.figureType,"figure")?.renderPdf;
+      const inspected=resourceFallbacks[figure.id]?{svg:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"/>',warnings:[]}:inspectSvgViewport(generateFigureSvg(figure, request.mermaidAssets,{...context,assetPath:figure.assetPath}));
+      warnings.push(...[...new Set(inspected.warnings)].map(message=>({code:"FIGURE_LAYOUT_WARNING",message,sourceLine:figure.sourceLine,nodeType:"Figure"})));
+      const rawSvg=inspected.svg;
+      const svg = isPrepSchoolTheme(request.theme) && !nativeFigure
         ? prepSchoolFigureSvg(rawSvg, compactAssets.has(figure.assetPath),
           ["data-chart", "bar-chart", "line-chart"].includes(figure.figureType) && figure.params.type !== "line", figurePalette?.secondary)
         : rawSvg;
       return {
         path: figure.assetPath,
-        contents: figurePalette && figure.figureType !== "mermaid"
+        contents: figurePalette && figure.figureType !== "mermaid" && !nativeFigure
           ? applyEditorialFigurePalette(svg, figurePalette.primary, figurePalette.secondary)
           : svg,
         mediaType: "image/svg+xml" as const,
@@ -409,6 +462,8 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
       });
     }
   });
+  const usedIds=new Set(entries.flatMap(entry=>{const definition=extensionRegistry.get(entry.type);const config=entry.config??extensionRegistry.parse(entry.type,entry.raw??"",entry.sourceLine).config;return definition?.assetIds?.(config)??[];}));
+  for(const [key,asset]of Object.entries(materialAssets))if(usedIds.has(key))assets.push({path:assetPaths[key],contents:asset.data,mediaType:asset.mimeType,encoding:"base64"});
 
   return {
     ast,
@@ -416,5 +471,6 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
     sourceMap: sourceMapFromMarkers(source),
     assets,
     expectedText: collectExpectedText(ast),
+    warnings,
   };
 }

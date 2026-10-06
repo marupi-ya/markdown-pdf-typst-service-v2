@@ -121,7 +121,7 @@ export async function getTypstCompilerStatus() {
 }
 
 function safeAssetTarget(root: string, assetPath: string) {
-  if (!/^assets\/[a-z0-9][a-z0-9-]*\.svg$/u.test(assetPath)) {
+  if (!/^assets\/[a-z0-9][a-z0-9_-]*\.(?:svg|png|jpg)$/u.test(assetPath)) {
     throw new TypstCompilerError({
       stage: "validation",
       code: "UNSAFE_ASSET_PATH",
@@ -205,7 +205,7 @@ async function optionalTextValidation(pdfPath: string, project: GeneratedTypstPr
   }
 }
 
-export async function compileWithTypstCli(input: unknown) {
+export async function compileWithTypstCli(input: unknown, options: { inspectSemantics?: boolean } = {}) {
   let request: TypstCompileRequest;
   let project: GeneratedTypstProject;
   try {
@@ -224,7 +224,7 @@ export async function compileWithTypstCli(input: unknown) {
     for (const asset of project.assets) {
       const target = safeAssetTarget(root, asset.path);
       await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, asset.contents, "utf8");
+      await writeFile(target, asset.contents, asset.encoding==="base64"?"base64":"utf8");
     }
 
     const args = ["compile", "--root", root, "--diagnostic-format", "short"];
@@ -249,12 +249,19 @@ export async function compileWithTypstCli(input: unknown) {
       throw new TypstCompilerError({ stage: "validation", code: "INVALID_PDF", message: "Typstの出力が有効なPDFではありません。" });
     }
     const textValidation = await optionalTextValidation(pdfPath, project);
+    // This extra CLI pass is opt-in for regression runs; normal production
+    // compilation retains its existing cost and response shape.
+    const semanticLocations = options.inspectSemantics
+      ? JSON.parse((await run(status.binary, ["query", ...args.slice(1, -2).filter((arg, i, all) => arg !== "--diagnostic-format" && all[i - 1] !== "--diagnostic-format"), sourcePath, "metadata", "--field", "value"])).stdout) as Array<Record<string, unknown>>
+      : undefined;
     return {
       pdf,
       pageCount: approximatePageCount(pdf),
       typstVersion: status.version,
       textValidation,
       source: project.source,
+      semanticLocations,
+      warnings:project.warnings,
     };
   } finally {
     await rm(root, { recursive: true, force: true });

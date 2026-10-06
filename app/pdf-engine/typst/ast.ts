@@ -4,6 +4,7 @@ import {
   type OutputMode,
   type StudioBlock,
 } from "../../studio-core";
+import { extensionRegistry, assertSafeExtension } from "../../extensions";
 import type {
   TypstBlockNode,
   TypstBoxVariant,
@@ -42,6 +43,14 @@ export function parseTypstInline(source: string, sourceLine: number): TypstInlin
   let cursor = 0;
 
   while (cursor < normalized.length) {
+    const extensionToken=normalized.slice(cursor).match(/^\{\{([a-z][\w-]*):([^{}]+)\}\}/u);
+    const inlineDefinition=extensionToken ? extensionRegistry.get(extensionToken[1]) : undefined;
+    if (extensionToken && inlineDefinition?.inlineProperty) {
+      const parsed=assertSafeExtension(extensionRegistry.parse(inlineDefinition.type,`${inlineDefinition.inlineProperty}: '${extensionToken[2]}'`,sourceLine));
+      if(parsed.ok)nodes.push({type:"InlineExtension",extensionType:inlineDefinition.type,config:parsed.config,sourceLine});
+      else pushText(nodes,extensionToken[0]);
+      cursor+=extensionToken[0].length;continue;
+    }
     if (normalized[cursor] === "\\" && cursor + 1 < normalized.length) {
       pushText(nodes, normalized[cursor + 1]);
       cursor += 2;
@@ -108,7 +117,7 @@ export function parseTypstInline(source: string, sourceLine: number): TypstInlin
     }
 
     let next = cursor + 1;
-    while (next < normalized.length && !"\\*_[$`".includes(normalized[next])) next += 1;
+    while (next < normalized.length && !"\\*_[$`{".includes(normalized[next])) next += 1;
     pushText(nodes, normalized.slice(cursor, next));
     cursor = next;
   }
@@ -120,6 +129,7 @@ function textLength(inlines: TypstInlineNode[]): number {
   return inlines.reduce((total, node) => {
     if (node.type === "InlineText") return total + node.value.length;
     if (node.type === "InlineMath") return total + node.latex.length;
+    if (node.type === "InlineExtension") return total + String(node.config.formula ?? "").length;
     return total + textLength(node.children);
   }, 0);
 }
@@ -190,8 +200,8 @@ function splitTableRow(line: string) {
     if (character === "\\") {
       const next = normalized[index + 1];
       // Markdown tables escape a literal separator as `\|`. Only consume the
-      // backslash for that table-level escape. Preserve LaTeX commands such as
-      // `\frac`, `\sqrt`, and `\pi` for the inline-math parser.
+      // backslash for table-level escapes; LaTeX commands such as `\frac`,
+      // `\sqrt`, and `\pi` must reach the inline-math parser unchanged.
       if (next === "|") {
         current += next;
         index += 1;
@@ -277,7 +287,13 @@ function containsLargeFixedChild(nodes: TypstBlockNode[]): boolean {
   });
 }
 
-function blockToTypstNode(block: StudioBlock): TypstBlockNode {
+function blockToTypstNode(block: StudioBlock, outputMode: "complete"|"questions"|"answers" = "complete"): TypstBlockNode {
+  if (block.type === "content" || (block.type === "figure" && extensionRegistry.get(block.figureType ?? "", "figure"))) {
+    const extensionType = block.type === "content" ? block.blockName! : block.figureType!;
+    const result = assertSafeExtension(extensionRegistry.parse(extensionType, block.raw ?? "", block.startLine));
+    if (!result.ok) return { id:block.id, type:"Fallback", sourceLine:block.startLine, extensionType, raw:block.raw ?? "", message:result.diagnostics.map(issue => issue.message).join(" "), policy:defaultPolicy() };
+    if (block.type === "content") return { id:block.id, type:"Extension", extensionType, config:result.config, raw:block.raw ?? "", sourceLine:block.startLine, outputMode, policy:defaultPolicy() };
+  }
   if (block.type === "heading") {
     return {
       id: block.id,
@@ -355,7 +371,7 @@ function blockToTypstNode(block: StudioBlock): TypstBlockNode {
     type: "paragraph" as const,
     markdown: block.markdown,
     children: undefined,
-  }]).map(blockToTypstNode);
+  }]).map(child => blockToTypstNode(child,outputMode));
   const length = nodeTextLength(children);
   const meaningfulChildren = children.filter((child) => child.type !== "Divider").length;
   const variant = calloutVariant(block.blockName);
@@ -387,6 +403,7 @@ function blockToTypstNode(block: StudioBlock): TypstBlockNode {
     id: block.id,
     type,
     variant,
+    semantic: { exerciseId: block.attributes?.id, solutionFor: block.attributes?.for },
     sourceLine: block.startLine,
     title: parseTypstInline(defaultCalloutTitle(block, type), block.startLine),
     children,
@@ -407,39 +424,56 @@ export function buildTypstAst(
       code: "MARKDOWN_VALIDATION_FAILED",
       sourceLine: error.line,
       nodeType: error.blockType,
-      details: errors.map((issue) => `${issue.line}行目: ${issue.title}`),
+      details: errors.map((issue) => `${issue.line}行目: ${issue.title}。修正例：${issue.fix}`),
     });
   }
   const renderDocument = createRenderDocument(parsed, outputMode, includeQuestionInAnswer);
   return {
     type: "Document",
     metadata: renderDocument.metadata,
-    children: renderDocument.blocks.map(blockToTypstNode),
+    children: renderDocument.blocks.map(block => blockToTypstNode(block,outputMode)),
   };
 }
 
-export function collectExpectedText(ast: TypstDocumentAst) {
-  const samples: string[] = [];
+export function collectExpectedTextLocations(ast: TypstDocumentAst) {
+  const samples: Array<{text: string; sourceLine: number}> = [];
   const inlineText = (nodes: TypstInlineNode[]): string => nodes.map((node): string => {
     if (node.type === "InlineText") return node.value;
-    if (node.type === "InlineMath") return "";
+    if (node.type === "InlineMath") return "\u0000";
+    if (node.type === "InlineExtension") return "\u0000";
     return inlineText(node.children);
   }).join("");
   const visit = (node: TypstBlockNode) => {
     if (node.type === "Heading" || node.type === "Paragraph") {
       const value = inlineText(node.children).trim();
-      if (value.length >= 4) samples.push(value.slice(0, 80));
+      samples.push(...value.split("\u0000").filter(part => part.trim().length >= 4).map(text => ({text, sourceLine: node.sourceLine})));
     } else if (isTypstBoxNode(node)) {
       const title = inlineText(node.title).trim();
-      if (title) samples.push(title);
+      samples.push(...title.split("\u0000").filter(part => part.trim().length >= 4).map(text => ({text, sourceLine: node.sourceLine})));
       node.children.forEach(visit);
     } else if (node.type === "List") {
       node.items.forEach((item) => {
         const value = inlineText(item).trim();
-        if (value.length >= 4) samples.push(value.slice(0, 80));
+        samples.push(...value.split("\u0000").filter(part => part.trim().length >= 4).map(text => ({text, sourceLine: node.sourceLine})));
       });
+    } else if (node.type === "Table") {
+      [...node.header, ...node.rows.flat()].forEach(cell => {
+        inlineText(cell).split("\u0000").filter(text => text.trim().length >= 4)
+          .forEach(text => samples.push({ text, sourceLine: node.sourceLine }));
+      });
+    } else if (node.type === "Figure") {
+      inlineText(node.caption).split("\u0000").filter(text=>text.trim().length>=4).forEach(text=>samples.push({text,sourceLine:node.sourceLine}));
+    } else if (node.type === "Extension") {
+      const samplesForNode = extensionRegistry.get(node.extensionType,"content")?.textSamples?.(node.config,{outputMode:node.outputMode}) ?? [];
+      samplesForNode.filter(text => text.trim().length >= 4).forEach(text => samples.push({text,sourceLine:node.sourceLine}));
+    } else if (node.type === "Fallback") {
+      samples.push({ text:node.message, sourceLine:node.sourceLine });
     }
   };
   ast.children.forEach(visit);
-  return [...new Set(samples)].slice(0, 30);
+  return samples;
+}
+
+export function collectExpectedText(ast: TypstDocumentAst) {
+  return [...new Set(collectExpectedTextLocations(ast).map(sample => sample.text))];
 }

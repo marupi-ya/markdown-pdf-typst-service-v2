@@ -1,5 +1,6 @@
 import { parseFigureSource, type Mapping, type Value } from "./syntax";
 import { expression, relation } from "./expression";
+import { placeLabel } from "../extensions/layout";
 export { MATH_C_TYPES } from "./syntax";
 export type Point = [number, number];
 export type Primitive = {
@@ -559,41 +560,11 @@ function build(type: string, raw: string, sourceLine: number): MathCConfig {
     text = text!.replace(/[⃗̅]/g, "");
     const w = Math.max(14, [...text!].length * 8),
       h = 18;
-    const candidates =
-      offset === undefined
-        ? [
-            [10, -12],
-            [10, 22],
-            [-w - 10, -12],
-            [-w - 10, 22],
-            [14, -30],
-            [-w / 2, 35],
-          ]
-        : [pair(offset, p + ".labelOffset")];
-    let chosen = {
-      x: sx(at[0]) + candidates[0][0],
-      y: sy(at[1]) + candidates[0][1],
-      w,
-      h,
-    };
-    let best = Infinity;
-    for (const [dx, dy] of candidates) {
-      const x = sx(at[0]) + dx,
-        y = sy(at[1]) + dy;
-      let score =
-        occupied.filter(
-          (b) => x < b.x + b.w && x + w > b.x && y - h < b.y && y > b.y - b.h
-        ).length * 100;
-      score +=
-        Math.max(0, -x) +
-        Math.max(0, x + w - width) +
-        Math.max(0, h - y) +
-        Math.max(0, y - height);
-      if (score < best) {
-        best = score;
-        chosen = { x, y, w, h };
-      }
-    }
+    const placed = placeLabel([sx(at[0]),sy(at[1])],w,h,{x:0,y:0,w:width,h:height},
+      occupied.map(b => ({x:b.x,y:b.y-b.h,w:b.w,h:b.h})),
+      primitives.filter(primitive => primitive.tag === "line").map(primitive => ({from:[Number(primitive.attrs.x1),Number(primitive.attrs.y1)] as Point,to:[Number(primitive.attrs.x2),Number(primitive.attrs.y2)] as Point})),
+      offset === undefined ? undefined : pair(offset,p+".labelOffset"));
+    const chosen = {x:placed.rect.x,y:placed.rect.y+h,w,h};
     occupied.push(chosen);
     if (accent) {
       const y = chosen.y - 17,

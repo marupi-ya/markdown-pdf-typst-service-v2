@@ -51,6 +51,53 @@ const annotations = array(
   }),
   { default: [], maxItems: 120 }
 );
+const functionGroups = array(
+  object({
+    id: id(),
+    start: index,
+    end: index,
+    function: string({ required: true, enum: ["noun", "adjective", "adverb"] }),
+  }),
+  { default: [], maxItems: 120 }
+);
+const functionGlyphs: Record<string, readonly [string, string]> = {
+  noun: ["〈", "〉"], adjective: ["〔", "〕"], adverb: ["(", ")"],
+};
+export function validateFunctionGroups(text: string, groups: Mapping[], context: ValidationContext) {
+  const length = Array.from(text).length;
+  const ids = new Set<string>();
+  groups.forEach((group, i) => {
+    if (ids.has(String(group.id))) context.issue(`functionGroups[${i}].id`, "DUPLICATE_ID", "functionGroups のIDは文内で一意にしてください。");
+    ids.add(String(group.id));
+    if (Number(group.start) >= Number(group.end) || Number(group.end) > length)
+      context.issue(`functionGroups[${i}].end`, "INVALID_FUNCTION_GROUP_SPAN", `範囲はUnicodeコードポイントで 0 ≤ start < end ≤ ${length} にしてください。`);
+    for (let j = 0; j < i; j++) {
+      const other = groups[j], a = Number(group.start), b = Number(group.end), c = Number(other.start), d = Number(other.end);
+      if (a === c && b === d) context.issue(`functionGroups[${i}]`, "DUPLICATE_FUNCTION_GROUP_RANGE", "同じ範囲に複数の機能を指定できません。");
+      else if ((a < c && c < b && b < d) || (c < a && a < d && d < b))
+        context.issue(`functionGroups[${i}]`, "CROSSING_FUNCTION_GROUPS", "機能の範囲は離すか、完全な入れ子にしてください。交差する範囲は指定できません。");
+    }
+  });
+}
+export type FunctionGroupSegment =
+  | { kind: "source"; start: number; end: number; text: string }
+  | { kind: "delimiter"; boundary: number; edge: "open" | "close"; id: string; function: string; text: string };
+/** Separate source from generated glyphs; never strip literal source brackets. */
+export function functionGroupSegments(text: string, groups: Mapping[]): FunctionGroupSegment[] {
+  const chars = Array.from(text), length = chars.length;
+  const points = [...new Set([0, length, ...groups.flatMap(group => [Number(group.start), Number(group.end)]).filter(point => point >= 0 && point <= length)])].sort((a, b) => a - b);
+  const result: FunctionGroupSegment[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const boundary = points[i];
+    const closing = groups.filter(group => Number(group.end) === boundary).sort((a, b) => Number(b.start) - Number(a.start));
+    const opening = groups.filter(group => Number(group.start) === boundary).sort((a, b) => Number(b.end) - Number(a.end));
+    for (const [edge, matches] of [["close", closing], ["open", opening]] as const)
+      for (const group of matches) result.push({ kind: "delimiter", boundary, edge, id: String(group.id), function: String(group.function), text: functionGlyphs[String(group.function)][edge === "open" ? 0 : 1] });
+    const end = points[i + 1];
+    if (end !== undefined && end > boundary) result.push({ kind: "source", start: boundary, end, text: chars.slice(boundary, end).join("") });
+  }
+  return result;
+}
 const levels = object({
   complete: string({
     enum: ["plain", "minimal", "detailed"],
@@ -181,20 +228,36 @@ function level(
 ) {
   return String((config.levels as Mapping)[context.outputMode]);
 }
+/** Accept color data, never executable Typst; absent/invalid colors stay monochrome. */
+function annotationFill(color?: string) {
+  return color && /^#[0-9a-f]{6}$/iu.test(color) ? `rgb(${JSON.stringify(color)})` : undefined;
+}
 /** The sentence is segmented only for decoration; concatenation is invariant. */
 export function renderAnnotatedSentence(
   text: string,
   spans: Mapping[],
   display: string,
   context: ExtensionRenderContext,
-  key?: string[]
+  key?: string[],
+  annotationAccent?: string,
+  groups: Mapping[] = []
 ) {
-  if (!spans.length) return context.text(text);
+  // Plain must keep the legacy segmentation and output, including metadata.
+  const visibleGroups = display === "plain" ? [] : groups;
+  if (!spans.length && !visibleGroups.length) return context.text(text);
+  const groupEdges = functionGroupSegments(text, visibleGroups).filter((segment): segment is Extract<FunctionGroupSegment, { kind: "delimiter" }> => segment.kind === "delimiter");
+  const groupFill = annotationFill(context.annotationAccent);
+  const glyphs = (boundary: number, edge: "open" | "close") => groupEdges
+    .filter(segment => segment.boundary === boundary && segment.edge === edge)
+    .map(segment => `#text(overhang:false${groupFill ? `,fill:${groupFill}` : ""})[${context.text(segment.text)}]`).join("");
+  const fill = annotationFill(annotationAccent);
+  const stroke = fill ? `0.65pt + ${fill}` : "0.65pt";
   const points = [
     ...new Set([
       0,
       Array.from(text).length,
       ...spans.flatMap((span) => [Number(span.start), Number(span.end)]),
+      ...groupEdges.map(segment => segment.boundary),
     ]),
   ].sort((a, b) => a - b);
   const chars = Array.from(text);
@@ -212,15 +275,15 @@ export function renderAnnotatedSentence(
           (span) => span.style === "underline" || span.style === "bracket"
         )
       )
-        body = `#underline(stroke:0.65pt,offset:2pt)[${body}]`;
+        body = `#underline(stroke:${stroke},offset:2pt)[${body}]`;
       if (
         display === "detailed" &&
         active.some((span) => span.style === "overline")
       )
-        body = `#overline(stroke:0.65pt)[${body}]`;
+        body = `#overline(stroke:${stroke})[${body}]`;
       const brackets = active.filter((span) => span.style === "bracket");
       const tick =
-        "#box(width:0pt)[#line(start:(0pt,-0.8em),end:(0pt,0.2em),stroke:0.65pt)]";
+        `#box(width:0pt)[#line(start:(0pt,-0.8em),end:(0pt,0.2em),stroke:${stroke})]`;
       if (
         display === "detailed" &&
         brackets.some((span) => Number(span.start) === start)
@@ -239,7 +302,7 @@ export function renderAnnotatedSentence(
             )
             .join("")
         : "";
-      return anchors + body;
+      return anchors + glyphs(start, "open") + body + glyphs(end, "close");
     })
     .join("");
 }
@@ -270,13 +333,179 @@ function annotationLegend(
       return `#par[${context.text(description + details)}]`;
     });
   return items.length
-    ? `#block(breakable:true,above:3pt,below:5pt)[#set text(size:9pt)\n${items.join(
+    ? `#v(5pt,weak:false)
+#block(breakable:true,above:3pt,below:5pt)[#set text(size:9pt)\n${items.join(
         "\n"
-      )}]`
+      )}]#v(5pt,weak:false)`
     : "";
 }
+/** Interlinear is opt-in. Complex ranges keep the proven, breakable renderer. */
+export function interlinearFallbackReason(text: string, spans: Mapping[]) {
+  const sorted = [...spans].sort((a, b) => Number(a.start) - Number(b.start));
+  if (sorted.some((span, i) => i > 0 && Number(span.start) < Number(sorted[i - 1].end)))
+    return "overlap";
+  if (spans.some((span) => /[\r\n\t]/u.test(spanText(text, span))))
+    return "annotation-line-break";
+  return undefined;
+}
+
+/** Every source code point occurs exactly once, including inter-span whitespace. */
+export function interlinearSegments(text: string, spans: Mapping[]) {
+  const chars = Array.from(text);
+  const result: Array<{ text: string; span?: Mapping }> = [];
+  let cursor = 0;
+  for (const span of [...spans].sort((a, b) => Number(a.start) - Number(b.start))) {
+    const start = Number(span.start), end = Number(span.end);
+    if (start > cursor) result.push({ text: chars.slice(cursor, start).join("") });
+    result.push({ text: chars.slice(start, end).join(""), span });
+    cursor = end;
+  }
+  if (cursor < chars.length) result.push({ text: chars.slice(cursor).join("") });
+  return result;
+}
+
+function interlinearDetails(
+  text: string,
+  spans: Mapping[],
+  display: string,
+  context: ExtensionRenderContext,
+  all = false
+) {
+  const fill = annotationFill(context.annotationAccent);
+  const describe = (span: Mapping) => `${span.role} “${spanText(text, span)}”`;
+  const reference = (id: unknown) => {
+    const target = spans.find((span) => span.id === id);
+    return target ? describe(target) : String(id);
+  };
+  const visible = spans.filter((span) => display === "detailed" || ["S", "V", "O", "C", "M"].includes(String(span.role)));
+  const items = visible.filter((span) => all || (span.label && span.label !== span.role) || (display === "detailed" && (span.parent || span.relation || span.note)))
+    .map((span) => {
+      const label = span.label && span.label !== span.role ? ` / ${span.label}` : "";
+      const details = display === "detailed"
+        ? `${span.parent ? ` / parent: ${reference(span.parent)}` : ""}${span.relation ? ` → ${reference(span.relation)}` : ""}${span.note ? ` / ${span.note}` : ""}`
+        : "";
+      return `#par[${context.text(`${describe(span)}${all ? ` [${span.id}]` : ""}${label}${details}`)}]`;
+    });
+  return items.length ? `#block(breakable:true,above:4pt,below:2pt)[#set text(size:9pt${fill ? `,fill:${fill}` : ""})\n#set par(spacing:3pt)\n${items.join("\n")}]` : "";
+}
+
+function interlinearDiagnostic(id: string, used: string, reason?: string) {
+  return `#metadata((kind:"syntax-annotation-layout",id:${JSON.stringify(id)},requested:"interlinear",used:${JSON.stringify(used)},reason:${reason ? JSON.stringify(reason) : "none"}))`;
+}
+
+function renderInterlinear(
+  id: string,
+  text: string,
+  spans: Mapping[],
+  display: string,
+  context: ExtensionRenderContext,
+  groups: Mapping[] = []
+) {
+  const fill = annotationFill(context.annotationAccent);
+  const fallback = (reason: string) => `${interlinearDiagnostic(id, "legend", reason)}\n#par[${renderAnnotatedSentence(text, spans, display, context, undefined, context.annotationAccent, groups)}]\n${interlinearDetails(text, spans, display, context, true)}`;
+  const reason = interlinearFallbackReason(text, spans);
+  if (reason) return fallback(reason);
+  const units: string[] = [];
+  let sourceOffset = 0;
+  const content = interlinearSegments(text, spans).map((segment) => {
+    const start = sourceOffset, end = start + Array.from(segment.text).length;
+    sourceOffset = end;
+    const localGroups = groups.filter(group => Number(group.start) < end && Number(group.end) > start)
+      .map(group => ({ ...group, start: Number(group.start) - start, end: Number(group.end) - start }));
+    if (!segment.span) return localGroups.length
+      ? renderAnnotatedSentence(segment.text, [], display, context, undefined, context.annotationAccent, localGroups)
+      : context.text(segment.text);
+    const span: Mapping = { ...segment.span, start: 0, end: Array.from(segment.text).length };
+    const body = renderAnnotatedSentence(segment.text, [span], display, context, undefined, context.annotationAccent, localGroups);
+    const caption = display === "detailed" || ["S", "V", "O", "C", "M"].includes(String(span.role))
+      ? String(span.role) : "";
+    const index = units.length;
+    units.push(`([${body}], [${context.text(caption)}])`);
+    return `#syntax-unit(..syntax-units.at(${index}))`;
+  }).join("");
+  // Never guess a font's baseline or fit by character count. Typst measures the
+  // actual text at the active font/size. The first row ends at its baseline;
+  // the explicit box baseline keeps unannotated punctuation on that same row.
+  return `#layout(size => context {
+  let syntax-units = (${units.join(",")} ,)
+  let syntax-label(body) = text(size:8pt,weight:"bold",${fill ? `fill:${fill},` : ""}body)
+  let syntax-unit(body,caption) = {
+    let main = text(bottom-edge:"baseline",body)
+    box(baseline:(at:top,shift:-measure(main).height),stack(dir:ttb,spacing:5pt,main,align(center,syntax-label(caption))))
+  }
+  if syntax-units.any(unit => calc.max(measure(unit.at(0)).width,measure(syntax-label(unit.at(1))).width) > size.width) {
+    [${fallback("unit-exceeds-line-width")}]
+  } else {
+    [${interlinearDiagnostic(id, "interlinear")}\n#set par(leading:0.65em)\n#par[${content}]\n${interlinearDetails(text, spans, display, context)}]
+  }
+})`;
+}
+/** B: native vector soft highlights. Source and functional delimiters stay separate. */
+function renderSoftHighlight(
+  id: string, text: string, spans: Mapping[], display: string,
+  context: ExtensionRenderContext, groups: Mapping[] = []
+) {
+  const accent = annotationFill(context.annotationAccent) || 'rgb("#8d4b5c")';
+  const diag = (used: string, reason?: string) => `#metadata((kind:"syntax-annotation-layout",id:${JSON.stringify(id)},requested:"interlinear",used:${JSON.stringify(used)},reason:${reason ? JSON.stringify(reason) : "none"},visualStyle:"soft-highlight"))`;
+  const reason = interlinearFallbackReason(text, spans);
+  if (reason) return `${diag("legend", reason)}\n#par[${renderAnnotatedSentence(text, [], display, context, undefined, context.annotationAccent, groups)}]\n${interlinearDetails(text, spans, display, context, true)}`;
+  let offset = 0;
+  const units: string[] = [];
+  const content = interlinearSegments(text, spans).map(segment => {
+    const start = offset, end = start + Array.from(segment.text).length;
+    offset = end;
+    const local = (a: number, b: number) => groups.filter(g => Number(g.start) < b && Number(g.end) > a)
+      .map(g => ({...g, start:Number(g.start)-a, end:Number(g.end)-a}));
+    if (!segment.span) return renderAnnotatedSentence(segment.text, [], display, context, undefined, context.annotationAccent, local(start, end));
+    const span = segment.span;
+    const caption = display === "detailed" || ["S","V","O","C","M"].includes(String(span.role)) ? String(!["S","V","O","C","M"].includes(String(span.role)) && span.label ? span.label : span.role) : "";
+    const highlighted = groups.some(g => Number(g.start) < end && Number(g.end) > start);
+    // Each token retains its exact source whitespace. Packing is measured by Typst,
+    // not guessed from character counts. Functional edge glyphs occur once only.
+    let tokenOffset = start;
+    const tokens = (segment.text.match(/\S+\s*|\s+/gu) || []).map(token => {
+      const a = tokenOffset, b = a + Array.from(token).length;
+      tokenOffset = b;
+      const body = renderAnnotatedSentence(token, [], display, context, undefined, context.annotationAccent, local(a,b));
+      return `[${body}]`;
+    });
+    const n = units.length;
+    units.push(`(tokens:(${tokens.join(",")},),caption:[${context.text(caption)}],highlight:${highlighted},verb:${span.role === "V" && span.style !== "none"})`);
+    return `#soft-place(soft-units.at(${n}))`;
+  }).join("");
+  return `#layout(size => context {
+    let soft-units = (${units.join(",")},)
+    let soft-label(caption) = box(width:calc.min(measure(text(size:9pt,weight:"bold",caption)).width + 10pt,size.width - 5pt),fill:${accent},radius:4pt,inset:(x:5pt,y:1.5pt),text(size:9pt,weight:"bold",fill:white,caption))
+    let soft-piece(body,caption,highlight,verb) = {
+      let ink = if verb { underline(stroke:0.75pt + ${accent},offset:2pt,body) } else { body }
+      let main = box(fill:if highlight { rgb("#f4dfe5") } else { none },radius:4pt,inset:(x:2.5pt,y:3pt),text(bottom-edge:"baseline",ink))
+      box(baseline:(at:top,shift:-(measure(main).height - 3pt)),stack(dir:ttb,spacing:4pt,main,align(center,soft-label(caption))))
+    }
+    let soft-place(unit) = {
+      let capacity = size.width - 7pt
+      let chunks = ()
+      let current = []
+      for token in unit.tokens {
+        if measure(token).width > capacity { panic("Soft highlight token exceeds panel width; split or redesign source annotation without shrinking text.") }
+        if measure(current + token).width > capacity and current != [] {
+          chunks.push(current)
+          current = token
+        } else { current += token }
+      }
+      if current != [] { chunks.push(current) }
+      for (i,chunk) in chunks.enumerate() {
+        if i > 0 { linebreak() }
+        soft-piece(chunk,unit.caption,unit.highlight,unit.verb)
+      }
+    }
+    [${diag("interlinear")}\n#set par(leading:0.9em)\n#par[${content}]\n${interlinearDetails(text, spans, display, context).replace("above:4pt", "above:8pt").replace("spacing:3pt", "spacing:5pt,leading:0.4em")}]
+  })`;
+}
+
 const tests = [
   "english-extensions.test.ts",
+  "english-interlinear.test.ts",
+  "english-function-groups.test.ts",
   "pdf-regression:english-grammar",
   "pdf-regression:english-reading",
 ];
@@ -289,6 +518,9 @@ const syntax: ExtensionDefinition = {
     id: id(),
     originalText: string({ required: true, minLength: 1 }),
     annotations,
+    functionGroups,
+    presentation: string({ enum: ["legend", "interlinear"], default: "legend" }),
+    visualStyle: string({ enum: ["classic", "soft-highlight"], default: "classic" }),
     levels: { ...levels, default: {} },
   }),
   validate(config, context) {
@@ -297,16 +529,29 @@ const syntax: ExtensionDefinition = {
       list(config.annotations),
       context
     );
+    validateFunctionGroups(String(config.originalText), list(config.functionGroups), context);
+    if (config.presentation === "interlinear") {
+      const reason = interlinearFallbackReason(String(config.originalText), list(config.annotations));
+      if (reason) context.issue("presentation", "INTERLINEAR_FALLBACK_" + reason.toUpperCase().replaceAll("-", "_"), "重複・入れ子または注釈内改行のため、原文と注釈を保持した凡例表示を使用します。", "warning");
+    }
   },
   render(config, context) {
     const text = String(config.originalText),
       spans = list(config.annotations),
+      groups = list(config.functionGroups),
       display = level(config, context);
+    if (config.presentation === "interlinear" && config.visualStyle === "soft-highlight" && display !== "plain" && spans.length)
+      return `#block(breakable:true,above:8pt,below:8pt,fill:rgb("#faf3f5"),radius:7pt,inset:9pt)[#set par(justify:false)\n${renderSoftHighlight(String(config.id), text, spans, display, context, groups)}]`;
+    if (config.presentation === "interlinear" && display !== "plain" && spans.length)
+      return `#block(breakable:true,above:6pt,below:6pt)[#set par(justify:false)\n${renderInterlinear(String(config.id), text, spans, display, context, groups)}]`;
     return `#block(breakable:true,above:6pt,below:6pt)[#set par(justify:false)\n#par[${renderAnnotatedSentence(
       text,
       spans,
       display,
-      context
+      context,
+      undefined,
+      undefined,
+      groups
     )}]\n${annotationLegend(text, spans, display, context)}]`;
   },
   textSamples: (config) => [String(config.originalText)],
@@ -316,8 +561,13 @@ const syntax: ExtensionDefinition = {
     restrictions: [
       "start/end は0始まり、Unicodeコードポイント、endは範囲に含まない。UTF-16の添字ではない。",
       "原文はplain text。装飾はannotationsに指定し、Markdownの記号を文字数へ混在させない。",
+      "functionGroups は任意の独立した機能注釈。id/start/end/function（noun・adjective・adverb）を指定し、〈〉・〔〕・()を原文の範囲に対応して表示する。文法機能の推定はしない。",
+      "functionGroups の範囲は離すか完全な入れ子にする。同一範囲・交差・不正範囲はエラー。plain では記号やIDを出力しない。未指定/空配列は従来出力と同一。",
       "S/V等は指定済みの情報のみ。minimal は下線と主要役割凡例、detailed は上線・括弧線・関係・noteも表示。",
       "重なる範囲は装飾を合成する。弧状の依存矢印ではなく、対象IDと範囲を併記した関係凡例を使う。",
+      "visualStyle: soft-highlight はinterlinear専用のBデザイン。淡色背景・役割バッジ・機能括弧を使い、装飾縦線/上線は描かない。plainとclassicは従来同一。長い範囲は実測語境界で折り返す。",
+      "presentation: interlinear は原文直下に役割を配置する任意表示。未指定/legend は従来表示のまま。plain に注釈は出さない。",
+      "interlinear は重複・入れ子・注釈内改行、または実測で行幅を超える区間では全情報を保持した凡例へ切り替える。schema警告とTypst metadata(kind: syntax-annotation-layout)で検出可能。関係は指定済みの対象役割・対象語を表示し、推定しない。",
     ],
     errorExample:
       "id: bad\noriginalText: I run.\nannotations:\n  - id: V\n    start: 9\n    end: 20\n    role: V",

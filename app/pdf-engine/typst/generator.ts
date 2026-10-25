@@ -1,7 +1,7 @@
 import { buildTypstAst, collectExpectedText, parseTypstInline } from "./ast";
 import { generateFigureSvg } from "./figure-svg";
 import { latexToTypstMath } from "./math-adapter";
-import { renderTypstTheme, typstThemeFigurePalette, isPrepSchoolTheme } from "./theme";
+import { renderTypstTheme, typstThemeFigurePalette, typstThemeAnnotationAccent, isPrepSchoolTheme } from "./theme";
 import { prepSchoolFigureSvg } from "./prep-school-theme";
 import { extensionRegistry } from "../../extensions";
 import { inspectExtensionDocument, type ExtensionEntry } from "../../extensions/document";
@@ -65,6 +65,7 @@ function inlinePlainText(nodes: TypstInlineNode[]) {
 }
 
 type RenderContext = {
+  annotationAccent?: string;
   references?:Record<string,ExtensionAnchor>;
   assets?:Record<string,MaterialAsset>;
   assetPaths?:Record<string,string>;
@@ -149,7 +150,7 @@ function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | 
 function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string {
   if (node.type === "Extension") {
     const definition = extensionRegistry.get(node.extensionType,"content")!;
-    return `${marker(node)}\n${definition.render(node.config,{sourceLine:node.sourceLine,outputMode:node.outputMode,references:context.references,text:value => `#text(${typstString(value)})`,inline:value => renderInlines(parseTypstInline(value,node.sourceLine))})}`;
+    return `${marker(node)}\n${definition.render(node.config,{sourceLine:node.sourceLine,outputMode:node.outputMode,references:context.references,annotationAccent:context.annotationAccent,text:value => `#text(${typstString(value)})`,inline:value => renderInlines(parseTypstInline(value,node.sourceLine))})}`;
   }
   if (node.type === "Fallback") return `${marker(node)}\n#block(breakable: true)[#strong[#text(${typstString(node.extensionType)})：${renderInlines([{type:"InlineText",value:node.message}])}]\n#raw(${typstString(node.raw)}, block:true)]`;
   if (node.type === "Heading") {
@@ -420,7 +421,7 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
   const resourceFallbacks=Object.fromEntries(resources.filter(issue=>issue.severity==="error").map(issue=>[issue.ownerId,issue.message]));
   const warnings:TypstGenerationWarning[]=resources.map(issue=>({code:issue.code,message:issue.message,sourceLine:issue.sourceLine,nodeType:"Figure"}));
   const references=inspectExtensionDocument(entries.filter(entry=>!resourceFallbacks[entry.id])).anchors;
-  const context:RenderContext={references,assets:materialAssets,assetPaths,resourceFallbacks,outputMode:request.outputMode};
+  const context:RenderContext={annotationAccent:typstThemeAnnotationAccent(request.theme),references,assets:materialAssets,assetPaths,resourceFallbacks,outputMode:request.outputMode};
   const body = renderDocumentBody(ast.children, isPrepSchoolTheme(request.theme),context);
   const source = [
     documentVariables(ast),

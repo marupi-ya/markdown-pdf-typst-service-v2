@@ -171,6 +171,10 @@ export function isPrepSchoolTheme(themeId: TypstThemeId) {
   return THEMES[themeId]?.layout === "prep-school";
 }
 
+export function typstThemeAnnotationAccent(themeId: TypstThemeId) {
+  return THEMES[themeId].primary;
+}
+
 export function typstThemeFigurePalette(themeId: TypstThemeId) {
   const theme = THEMES[themeId];
   return theme.layout === "editorial" || theme.layout === "prep-school"

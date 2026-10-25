@@ -38,6 +38,8 @@ export type ExtensionRenderContext = {
   outputMode: "complete" | "questions" | "answers";
   text: (value: string) => string;
   inline: (value: string) => string;
+  /** Optional theme hex color; only opt-in interlinear annotations consume it. */
+  annotationAccent?: string;
   assetPath?: string;
   assetPaths?: Record<string, string>;
   assets?: Record<string, MaterialAsset>;

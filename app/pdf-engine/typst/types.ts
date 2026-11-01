@@ -56,7 +56,7 @@ export type TypstBlockNode =
   | (TypstNodeBase & { type:"Extension"; extensionType:string; config:Mapping; raw:string; outputMode:"complete"|"questions"|"answers" })
   | (TypstNodeBase & { type:"Fallback"; extensionType:string; raw:string; message:string })
   | (TypstNodeBase & { type: "Heading"; level: number; children: TypstInlineNode[] })
-  | (TypstNodeBase & { type: "Paragraph"; children: TypstInlineNode[] })
+  | (TypstNodeBase & { type: "Paragraph"; children: TypstInlineNode[]; quoted?: boolean })
   | (TypstNodeBase & { type: "DisplayMath"; latex: string })
   | (TypstNodeBase & { type: "List"; ordered: boolean; items: TypstInlineNode[][] })
   | (TypstNodeBase & { type: "Table"; header: TypstInlineNode[][]; rows: TypstInlineNode[][][] })

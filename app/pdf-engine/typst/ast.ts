@@ -305,11 +305,17 @@ function blockToTypstNode(block: StudioBlock, outputMode: "complete"|"questions"
     };
   }
   if (block.type === "paragraph") {
+    const lines = block.markdown.split("\n");
+    const quoted = lines.every((line) => /^\s*>/u.test(line));
+    const content = quoted
+      ? lines.map((line) => line.replace(/^\s*> ?/u, "")).join("\n")
+      : block.markdown;
     return {
       id: block.id,
       type: "Paragraph",
       sourceLine: block.startLine,
-      children: parseTypstInline(block.markdown, block.startLine),
+      children: parseTypstInline(content, block.startLine),
+      quoted,
       policy: defaultPolicy(),
     };
   }

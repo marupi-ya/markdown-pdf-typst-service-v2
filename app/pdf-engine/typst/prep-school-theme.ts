@@ -52,6 +52,7 @@ export function renderPrepSchoolTheme(settings: StudioSettings, palette = { prim
 #show table.cell.where(y: 0): set text(font: sans-font, weight: "bold")
 
 #let studio-par(body) = block(width: 100%, above: 0pt, below: ${pt(Math.max(3, settings.paragraphSpacing * 0.6))}, inset: (top: 1.5pt, bottom: 1.5pt))[#par(body)]
+#let studio-quote(body) = block(width: 100%, above: 3pt, below: ${pt(Math.max(3, settings.paragraphSpacing * 0.6))}, inset: (left: 9pt, top: 2pt, bottom: 2pt), stroke: (left: 1pt + muted-color))[#par(body)]
 #let studio-display-math(body, emphasis: false) = block(width: 100%, breakable: false, above: 6pt, below: 7pt, inset: (y: 2pt))[
   #align(center)[#text(size: if emphasis { ${pt(settings.fontSize * 1.18)} } else { ${pt(settings.fontSize * 1.12)} })[#body]]
 ]

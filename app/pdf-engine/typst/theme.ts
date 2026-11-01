@@ -360,6 +360,11 @@ function renderEditorialTypstTheme(theme: TypstThemeTokens, settings: StudioSett
   par()[#body],
 )
 
+#let studio-quote(body) = block(width: 100%, above: 3pt, below: ${pt(paragraphGap)},
+  inset: (left: 9pt, top: 2pt, bottom: 2pt), stroke: (left: 1pt + muted-color),
+  par()[#body],
+)
+
 #let studio-display-math(body, emphasis: false) = block(
   width: 100%,
   breakable: false,
@@ -628,6 +633,11 @@ export function renderTypstTheme(themeId: TypstThemeId, settings: StudioSettings
 #let studio-par(body) = block(
   width: 100%,
   below: ${pt(paragraphGap)},
+  par()[#body],
+)
+
+#let studio-quote(body) = block(width: 100%, above: 3pt, below: ${pt(paragraphGap)},
+  inset: (left: 9pt, top: 2pt, bottom: 2pt), stroke: (left: 1pt + muted-color),
   par()[#body],
 )
 

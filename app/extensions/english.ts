@@ -369,7 +369,8 @@ function interlinearDetails(
   spans: Mapping[],
   display: string,
   context: ExtensionRenderContext,
-  all = false
+  all = false,
+  showInternalIds = true
 ) {
   const fill = annotationFill(context.annotationAccent);
   const describe = (span: Mapping) => `${span.role} “${spanText(text, span)}”`;
@@ -384,7 +385,7 @@ function interlinearDetails(
       const details = display === "detailed"
         ? `${span.parent ? ` / parent: ${reference(span.parent)}` : ""}${span.relation ? ` → ${reference(span.relation)}` : ""}${span.note ? ` / ${span.note}` : ""}`
         : "";
-      return `#par[${context.text(`${describe(span)}${all ? ` [${span.id}]` : ""}${label}${details}`)}]`;
+      return `#par[${context.text(`${describe(span)}${all && showInternalIds ? ` [${span.id}]` : ""}${label}${details}`)}]`;
     });
   return items.length ? `#block(breakable:true,above:4pt,below:2pt)[#set text(size:9pt${fill ? `,fill:${fill}` : ""})\n#set par(spacing:3pt)\n${items.join("\n")}]` : "";
 }
@@ -412,9 +413,9 @@ function renderInterlinear(
     sourceOffset = end;
     const localGroups = groups.filter(group => Number(group.start) < end && Number(group.end) > start)
       .map(group => ({ ...group, start: Number(group.start) - start, end: Number(group.end) - start }));
-    if (!segment.span) return localGroups.length
+    if (!segment.span) return (localGroups.length
       ? renderAnnotatedSentence(segment.text, [], display, context, undefined, context.annotationAccent, localGroups)
-      : context.text(segment.text);
+      : context.text(segment.text));
     const span: Mapping = { ...segment.span, start: 0, end: Array.from(segment.text).length };
     const body = renderAnnotatedSentence(segment.text, [span], display, context, undefined, context.annotationAccent, localGroups);
     const caption = display === "detailed" || ["S", "V", "O", "C", "M"].includes(String(span.role))
@@ -711,6 +712,85 @@ function renderVocabulary(items: Mapping[], context: ExtensionRenderContext) {
     )
     .join("\n")}]`;
 }
+const readingRoleLabel: Record<string, string> = {
+  S: "S", V: "V", O: "O", C: "C", M: "M",
+  phrase: "句", clause: "節", modifier: "修飾", relative: "関係",
+  conjunction: "接続", ellipsis: "省略", apposition: "同格",
+};
+
+function readingSpanOrder(spans: Mapping[]) {
+  const byId = new Map(spans.map(span => [String(span.id), span]));
+  const depth = (span: Mapping) => {
+    let current = span;
+    let count = 0;
+    const visited = new Set([String(span.id)]);
+    while (current.parent && byId.has(String(current.parent)) && !visited.has(String(current.parent))) {
+      count++;
+      visited.add(String(current.parent));
+      current = byId.get(String(current.parent))!;
+    }
+    return count;
+  };
+  return [...spans].sort((a, b) => depth(a) - depth(b)
+    || Number(a.start) - Number(b.start) || Number(b.end) - Number(a.end));
+}
+
+function readingFallbackReason(text: string, spans: Mapping[]) {
+  const sorted = readingSpanOrder(spans);
+  if (sorted.some((span, i) => sorted.slice(0, i).some(other =>
+    Number(other.start) < Number(span.start) && Number(span.start) < Number(other.end) && Number(other.end) < Number(span.end))))
+    return "crossing-spans";
+  if (/[\r\n\t]/u.test(text)) return "source-line-break";
+  const boundaries = [...new Set([0, Array.from(text).length, ...spans.flatMap(span => [Number(span.start), Number(span.end)])])].sort((a, b) => a - b);
+  const chars = Array.from(text);
+  for (let i = 0; i < boundaries.length - 1; i++) {
+    const start = boundaries[i], end = boundaries[i + 1];
+    const active = sorted.filter(span => Number(span.start) <= start && Number(span.end) >= end);
+    if (active.length > 5 || active.some(span => (readingRoleLabel[String(span.role)] ?? String(span.role)).length > 8))
+      return "unit-exceeds-safe-width";
+    if (active.length && chars.slice(start, end).join("").match(/\S+/gu)?.some(token => Array.from(token).length > 28))
+      return "unit-exceeds-safe-width";
+  }
+  return undefined;
+}
+
+/** Inline units let a passage flow as prose while keeping each role below its word. */
+function renderReadingInline(
+  text: string, spans: Mapping[], display: string,
+  context: ExtensionRenderContext, key: string[]
+) {
+  const chars = Array.from(text);
+  const sorted = readingSpanOrder(spans);
+  const fallbackReason = readingFallbackReason(text, spans);
+  const fallback = (reason: string) => `${interlinearDiagnostic(key.join("/"), "legend", reason)}${renderAnnotatedSentence(text, spans, display, context, key, context.annotationAccent)}`;
+  if (fallbackReason) return fallback(fallbackReason);
+  const boundaries = [...new Set([0, chars.length, ...spans.flatMap(span => [Number(span.start), Number(span.end)])])].sort((a, b) => a - b);
+  const parts: Array<{ start: number; text: string; active: Mapping[] }> = [];
+  for (let i = 0; i < boundaries.length - 1; i++) {
+    const start = boundaries[i], end = boundaries[i + 1];
+    const chunk = chars.slice(start, end).join("");
+    let offset = start;
+    for (const match of chunk.matchAll(/\s+|\S+/gu)) {
+      const value = match[0];
+      parts.push({ start: offset, text: value, active: sorted.filter(span => Number(span.start) <= offset && Number(span.end) >= offset + Array.from(value).length) });
+      offset += Array.from(value).length;
+    }
+  }
+  const content = parts.map(part => {
+    const anchors = spans.filter(span => Number(span.start) === part.start)
+      .map(span => safeAnchor(context, referenceKey(...key, String(span.id)))).join("");
+    if (!part.active.length || /^\s+$/u.test(part.text)) return anchors + context.text(part.text);
+    const roles = part.active.map(span => readingRoleLabel[String(span.role)] ?? String(span.role));
+    let body = context.text(part.text);
+    if (part.active.some(span => span.style === "underline" || span.style === "bracket"))
+      body = `#underline(stroke:0.65pt,offset:2pt)[${body}]`;
+    if (display === "detailed" && part.active.some(span => span.style === "overline"))
+      body = `#overline(stroke:0.65pt)[${body}]`;
+    return `${anchors}#reading-unit([${body}],(${roles.map(role => `[${context.text(role)}]`).join(",")} ,))`;
+  }).join("");
+  return `${interlinearDiagnostic(key.join("/"), "interlinear")}${content}`;
+}
+
 const reading: ExtensionDefinition = {
   type: "reading-passage",
   kind: "content",
@@ -731,7 +811,9 @@ const reading: ExtensionDefinition = {
       { required: true, minItems: 1, maxItems: 100 }
     ),
     sentenceNumbers: boolean(true),
+    paragraphNumbers: boolean(true),
     lineNumbers: boolean(false),
+    annotationPresentation: string({ enum: ["legend", "interlinear"], default: "legend" }),
     levels: { ...levels, default: {} },
     vocabulary: array(vocabulary, { default: [], maxItems: 300 }),
     vocabularyPlacement: string({
@@ -768,6 +850,15 @@ const reading: ExtensionDefinition = {
           context,
           `paragraphs[${p}].sentences[${i}].annotations`
         );
+        if (config.annotationPresentation === "interlinear") {
+          const reason = readingFallbackReason(String(s.originalText), list(s.annotations));
+          if (reason) context.issue(
+            `paragraphs[${p}].sentences[${i}].annotations`,
+            "READING_INTERLINEAR_FALLBACK",
+            `行内注釈を安全に配置できないため凡例表示へ切り替えます（${reason}）。`,
+            "warning"
+          );
+        }
       });
     });
     for (const key of ["vocabulary", "notes"])
@@ -839,9 +930,7 @@ const reading: ExtensionDefinition = {
         header = `${safeAnchor(
           context,
           referenceKey(...prefix)
-        )}#block(breakable:false,sticky:true)[#strong[${context.text(
-          `Paragraph ${p + 1}`
-        )}]]`;
+        )}${config.paragraphNumbers ? `#block(breakable:false,sticky:true)[#strong[${context.text(`Paragraph ${p + 1}`)}]]` : ""}`;
       const body = list(paragraph.sentences)
         .map((s) => {
           number++;
@@ -854,24 +943,23 @@ const reading: ExtensionDefinition = {
           return `${safeAnchor(
             context,
             referenceKey(...parts)
-          )}${sentenceNumber}${renderAnnotatedSentence(
-            text,
-            spans,
-            display,
-            context,
-            parts
-          )}`;
+          )}${sentenceNumber}${config.annotationPresentation === "interlinear" && display !== "plain" && spans.length
+            ? renderReadingInline(text, spans, display, context, parts)
+            : renderAnnotatedSentence(text, spans, display, context, parts)}`;
         })
         .join(context.text(" "));
       const legends = list(paragraph.sentences)
-        .map((s) =>
-          annotationLegend(
-            String(s.originalText),
-            list(s.annotations),
-            display,
-            context
-          )
-        )
+        .map((s) => {
+          if (config.annotationPresentation !== "interlinear")
+            return annotationLegend(String(s.originalText), list(s.annotations), display, context);
+          if (display === "plain") return "";
+          const text = String(s.originalText), spans = list(s.annotations);
+          const reason = readingFallbackReason(text, spans);
+          const detail = display === "detailed"
+            ? interlinearDetails(text, spans, display, context, Boolean(reason), false)
+            : reason ? interlinearDetails(text, spans, display, context, true, false) : "";
+          return reason ? `#block(breakable:true)[#strong[注釈を凡例に切替: ${context.text(reason)}]]\n${detail}` : detail;
+        })
         .join("\n");
       const words =
         config.vocabularyPlacement === "paragraph-end"
@@ -897,7 +985,13 @@ const reading: ExtensionDefinition = {
     return `${safeAnchor(
       context,
       referenceKey("passage", passage)
-    )}#block(breakable:true,above:8pt,below:8pt)[#set par(justify:false,leading:0.8em)\n${
+    )}#block(breakable:true,above:8pt,below:8pt)[#set par(justify:false,leading:0.8em)
+#let reading-unit(body, caption) = context {
+  let main = text(bottom-edge:"baseline", body)
+  let labels = caption.map(label => align(center,text(size:7pt,weight:"bold",label)))
+  box(baseline:(at:top,shift:-measure(main).height),stack(dir:ttb,spacing:2pt,main,..labels))
+}
+${
       config.title ? `#strong[${context.text(String(config.title))}]` : ""
     }\n${lineRule}\n${paragraphs.join("\n")}\n${
       config.vocabularyPlacement === "passage-end"
@@ -1006,6 +1100,8 @@ const reference: ExtensionDefinition = {
   schema: object({
     label: string({ required: true, maxLength: 2000 }),
     target: { ...target, required: true },
+    showPage: boolean(false),
+    showTargetLabel: boolean(true),
   }),
   validate(config, context) {
     validateTarget(config.target as Mapping, context, "target");
@@ -1013,12 +1109,19 @@ const reference: ExtensionDefinition = {
   references: (config) => [
     { key: englishTargetKey(config.target as Mapping), path: "target" },
   ],
-  render: (config, context) =>
-    `#par[${targetReference(
+  render: (config, context) => {
+    const key = englishTargetKey(config.target as Mapping);
+    const page = config.showPage && context.references?.[key]
+      ? ` (p. #context counter(page).at(label(${JSON.stringify(referenceLabel(key))})).first())` : "";
+    const link = config.showTargetLabel ? targetReference(
       config.target as Mapping,
       context,
       String(config.label)
-    )}]`,
+    ) : context.references?.[key]
+      ? `#link(label(${JSON.stringify(referenceLabel(key))}))[${context.text(String(config.label))}]`
+      : context.text(`${String(config.label)} [参照先未確認: ${key}]`);
+    return `#par[${link}${page}]`;
+  },
   textSamples: (config) => [String(config.label)],
   documentation: {
     summary: "設問から長文・段落・文・下線範囲へIDで参照する。",

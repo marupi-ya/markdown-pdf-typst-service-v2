@@ -157,7 +157,7 @@ function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string 
     return `${marker(node)}\n#heading(level: ${node.level})[${renderInlines(node.children)}]`;
   }
   if (node.type === "Paragraph") {
-    const renderer = context.conclusion ? "studio-conclusion" : "studio-par";
+    const renderer = node.quoted ? "studio-quote" : context.conclusion ? "studio-conclusion" : "studio-par";
     return `${marker(node)}\n#${renderer}[${renderInlines(node.children)}]`;
   }
   if (node.type === "DisplayMath") {

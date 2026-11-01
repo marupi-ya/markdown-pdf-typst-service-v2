@@ -1971,6 +1971,7 @@ function startsSpecial(line: string, next = "") {
     /^```/.test(line) ||
     /^\$\$\s*$/.test(line) ||
     /^\\\[\s*$/.test(line) ||
+    /^\s*>/u.test(line) ||
     /^([-*_])\1{2,}\s*$/.test(line) ||
     /^(\s*[-*+]\s+|\s*\d+\.\s+)/.test(line) ||
     (line.includes("|") && /^\s*\|?[\s:|-]+\|/.test(next))
@@ -2234,6 +2235,19 @@ function baseParse(source: string, allowFrontmatter = true) {
     if (/^([-*_])\1{2,}\s*$/.test(line.trim())) {
       blocks.push(makeBlock("hr", lineNumber, lineNumber, "---"));
       cursor += 1;
+      continue;
+    }
+
+    if (/^\s*>/u.test(line)) {
+      let start = cursor;
+      while (cursor < lines.length && /^\s*>/u.test(lines[cursor])) {
+        if (/^\s*>\s*$/u.test(lines[cursor])) {
+          if (cursor > start) blocks.push(makeBlock("paragraph", start + 1, cursor, lines.slice(start, cursor).join("\n")));
+          cursor += 1;
+          start = cursor;
+        } else cursor += 1;
+      }
+      if (cursor > start) blocks.push(makeBlock("paragraph", start + 1, cursor, lines.slice(start, cursor).join("\n")));
       continue;
     }
 
@@ -2851,10 +2865,14 @@ export function createRenderDocument(
   }
 
   const exercises = new Map<string, StudioBlock>();
+  const exerciseNumbers = new Map<string, number>();
   for (const block of parsed.blocks) {
     if (block.blockName !== "exercise") continue;
     const exerciseId = block.attributes?.id;
-    if (exerciseId && !exercises.has(exerciseId)) exercises.set(exerciseId, block);
+    if (exerciseId && !exercises.has(exerciseId)) {
+      exercises.set(exerciseId, block);
+      exerciseNumbers.set(exerciseId, exerciseNumbers.size + 1);
+    }
   }
 
   const blocks: StudioBlock[] = [];
@@ -2867,7 +2885,7 @@ export function createRenderDocument(
           ...exercise,
           id: `answer-question-${solution.id}-${exercise.id}`,
           blockName: "answer-question",
-          title: exercise.title || `問題 ${reference}`,
+          title: exercise.title || `問題 ${exerciseNumbers.get(reference ?? "")}`,
           attributes: {
             ...exercise.attributes,
             "reprinted-for": solution.id,
@@ -2881,7 +2899,7 @@ export function createRenderDocument(
           type: "heading",
           startLine: exercise.startLine,
           endLine: exercise.startLine,
-          markdown: exercise.title || `問題 ${reference}`,
+          markdown: exercise.title || `問題 ${exerciseNumbers.get(reference ?? "")}`,
           level: 3,
           breakPolicy: "conditional",
           originBlockId: exercise.id,

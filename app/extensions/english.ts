@@ -717,78 +717,132 @@ const readingRoleLabel: Record<string, string> = {
   phrase: "句", clause: "節", modifier: "修飾", relative: "関係",
   conjunction: "接続", ellipsis: "省略", apposition: "同格",
 };
+const readingVisibleLabel = (span: Mapping) => String(span.label || readingRoleLabel[String(span.role)] || span.role);
+const spanStart = (span: Mapping) => Number(span.start);
+const spanEnd = (span: Mapping) => Number(span.end);
+const strictlyContains = (outer: Mapping, inner: Mapping) =>
+  spanStart(outer) <= spanStart(inner) && spanEnd(outer) >= spanEnd(inner) &&
+  (spanStart(outer) < spanStart(inner) || spanEnd(outer) > spanEnd(inner));
+function isParentAncestor(ancestor: Mapping, descendant: Mapping, byId: Map<string, Mapping>) {
+  let parent = descendant.parent && byId.get(String(descendant.parent));
+  const visited = new Set<string>();
+  while (parent && !visited.has(String(parent.id))) {
+    if (parent === ancestor) return true;
+    visited.add(String(parent.id));
+    parent = parent.parent && byId.get(String(parent.parent));
+  }
+  return false;
+}
+function readingSpanDepth(span: Mapping, spans: Mapping[], byId: Map<string, Mapping>) {
+  return spans.filter(other => other !== span &&
+    (strictlyContains(other, span) ||
+      (spanStart(other) === spanStart(span) && spanEnd(other) === spanEnd(span) && isParentAncestor(other, span, byId)))).length;
+}
 
 function readingSpanOrder(spans: Mapping[]) {
   const byId = new Map(spans.map(span => [String(span.id), span]));
-  const depth = (span: Mapping) => {
-    let current = span;
-    let count = 0;
-    const visited = new Set([String(span.id)]);
-    while (current.parent && byId.has(String(current.parent)) && !visited.has(String(current.parent))) {
-      count++;
-      visited.add(String(current.parent));
-      current = byId.get(String(current.parent))!;
-    }
-    return count;
-  };
-  return [...spans].sort((a, b) => depth(a) - depth(b)
+  return [...spans].sort((a, b) => readingSpanDepth(a, spans, byId) - readingSpanDepth(b, spans, byId)
     || Number(a.start) - Number(b.start) || Number(b.end) - Number(a.end));
 }
 
 function readingFallbackReason(text: string, spans: Mapping[]) {
   const sorted = readingSpanOrder(spans);
-  if (sorted.some((span, i) => sorted.slice(0, i).some(other =>
-    Number(other.start) < Number(span.start) && Number(span.start) < Number(other.end) && Number(other.end) < Number(span.end))))
-    return "crossing-spans";
-  if (/[\r\n\t]/u.test(text)) return "source-line-break";
-  const boundaries = [...new Set([0, Array.from(text).length, ...spans.flatMap(span => [Number(span.start), Number(span.end)])])].sort((a, b) => a - b);
-  const chars = Array.from(text);
-  for (let i = 0; i < boundaries.length - 1; i++) {
-    const start = boundaries[i], end = boundaries[i + 1];
-    const active = sorted.filter(span => Number(span.start) <= start && Number(span.end) >= end);
-    if (active.length > 5 || active.some(span => (readingRoleLabel[String(span.role)] ?? String(span.role)).length > 8))
-      return "unit-exceeds-safe-width";
-    if (active.length && chars.slice(start, end).join("").match(/\S+/gu)?.some(token => Array.from(token).length > 28))
-      return "unit-exceeds-safe-width";
+  const byId = new Map(spans.map(span => [String(span.id), span]));
+  for (let i = 0; i < sorted.length; i++) for (let j = i + 1; j < sorted.length; j++) {
+    const a = sorted[i], b = sorted[j];
+    if ((spanStart(a) < spanStart(b) && spanStart(b) < spanEnd(a) && spanEnd(a) < spanEnd(b)) ||
+        (spanStart(b) < spanStart(a) && spanStart(a) < spanEnd(b) && spanEnd(b) < spanEnd(a))) return "crossing-spans";
+    if (spanStart(a) === spanStart(b) && spanEnd(a) === spanEnd(b) &&
+        !isParentAncestor(a, b, byId) && !isParentAncestor(b, a, byId)) return "ambiguous-equal-range";
   }
+  if (/[\r\n\t]/u.test(text)) return "source-line-break";
+  const chars = Array.from(text);
+  if (sorted.some(span => !Number.isInteger(spanStart(span)) || !Number.isInteger(spanEnd(span)) ||
+      spanStart(span) < 0 || spanStart(span) >= spanEnd(span) || spanEnd(span) > chars.length)) return "invalid-range";
+  if (sorted.some(span => readingSpanDepth(span, spans, byId) > 4 ||
+      Array.from(readingVisibleLabel(span)).length > 8 || span.style === "overline")) return "unit-exceeds-safe-width";
+  if (sorted.some(span => chars.slice(spanStart(span), spanEnd(span)).join("").match(/\S+/gu)?.some(token => Array.from(token).length > 28)))
+    return "unit-exceeds-safe-width";
   return undefined;
 }
 
-/** Inline units let a passage flow as prose while keeping each role below its word. */
+/** Prefer whole phrases; split only long spans at word boundaries so prose can wrap. */
+export function readingSpanChunks(text: string, start: number, end: number, spans: Mapping[], maxChars = 26) {
+  const chars = Array.from(text);
+  const result: Array<{ start: number; end: number }> = [];
+  let cursor = start;
+  while (cursor < end) {
+    while (cursor < end && /\s/u.test(chars[cursor])) cursor++;
+    if (cursor >= end) break;
+    if (end - cursor <= maxChars) { result.push({ start: cursor, end }); break; }
+    const limit = Math.min(end, cursor + maxChars);
+    const options: number[] = [];
+    for (let point = cursor + 1; point <= limit; point++)
+      if (point < end && /\s/u.test(chars[point]) && !/\s/u.test(chars[point - 1])) options.push(point);
+    const safe = options.filter(point => !spans.some(span =>
+      spanStart(span) < point && point < spanEnd(span) && spanEnd(span) - spanStart(span) <= maxChars));
+    const point = safe.at(-1) ?? options.at(-1);
+    if (point === undefined) { result.push({ start: cursor, end }); break; }
+    result.push({ start: cursor, end: point });
+    cursor = point;
+  }
+  return result;
+}
+
 function renderReadingInline(
   text: string, spans: Mapping[], display: string,
-  context: ExtensionRenderContext, key: string[]
+  context: ExtensionRenderContext, key: string[], presentation: string
 ) {
   const chars = Array.from(text);
   const sorted = readingSpanOrder(spans);
   const fallbackReason = readingFallbackReason(text, spans);
   const fallback = (reason: string) => `${interlinearDiagnostic(key.join("/"), "legend", reason)}${renderAnnotatedSentence(text, spans, display, context, key, context.annotationAccent)}`;
   if (fallbackReason) return fallback(fallbackReason);
-  const boundaries = [...new Set([0, chars.length, ...spans.flatMap(span => [Number(span.start), Number(span.end)])])].sort((a, b) => a - b);
-  const parts: Array<{ start: number; text: string; active: Mapping[] }> = [];
-  for (let i = 0; i < boundaries.length - 1; i++) {
-    const start = boundaries[i], end = boundaries[i + 1];
-    const chunk = chars.slice(start, end).join("");
-    let offset = start;
-    for (const match of chunk.matchAll(/\s+|\S+/gu)) {
-      const value = match[0];
-      parts.push({ start: offset, text: value, active: sorted.filter(span => Number(span.start) <= offset && Number(span.end) >= offset + Array.from(value).length) });
-      offset += Array.from(value).length;
-    }
+  const byId = new Map(spans.map(span => [String(span.id), span]));
+  const roots = sorted.filter(span => readingSpanDepth(span, spans, byId) === 0)
+    .sort((a, b) => spanStart(a) - spanStart(b));
+  const output: string[] = [];
+  let cursor = 0;
+  for (const root of roots) {
+    if (spanStart(root) > cursor) output.push(context.text(chars.slice(cursor, spanStart(root)).join("")));
+    const unit = (chunk: { start: number; end: number }, continued: boolean) => {
+      const local = sorted.filter(span => spanStart(span) < chunk.end && spanEnd(span) > chunk.start);
+      const entries = local.map(span => {
+        const start = Math.max(chunk.start, spanStart(span)), end = Math.min(chunk.end, spanEnd(span));
+        const prefix = chars.slice(chunk.start, start).join("");
+        const body = chars.slice(start, end).join("");
+        const label = spanStart(span) >= chunk.start && spanStart(span) < chunk.end ? readingVisibleLabel(span) : "";
+        return `(prefix:${JSON.stringify(prefix)},body:${JSON.stringify(body)},label:${JSON.stringify(label)},depth:${readingSpanDepth(span, spans, byId)},role:${JSON.stringify(String(span.role))},line:${String(span.style !== "none")},before:${String(continued && spanStart(span) < chunk.start)},after:${String(continued && spanEnd(span) > chunk.end)})`;
+      });
+      const anchors = spans.filter(span => spanStart(span) >= chunk.start && spanStart(span) < chunk.end)
+        .map(span => safeAnchor(context, referenceKey(...key, String(span.id)))).join("");
+      return `${anchors}#reading-span-unit([${context.text(chars.slice(chunk.start, chunk.end).join(""))}],(${entries.join(",")},))`;
+    };
+    const full = { start: spanStart(root), end: spanEnd(root) };
+    const alternatives = [90, 60, 26, 10, 5].map(maxChars => {
+      const chunks = readingSpanChunks(text, full.start, full.end, sorted, maxChars);
+      const alternatives: string[] = [];
+      let inside = full.start;
+      for (const chunk of chunks) {
+        if (chunk.start > inside) alternatives.push(context.text(chars.slice(inside, chunk.start).join("")));
+        alternatives.push(unit(chunk, true));
+        inside = chunk.end;
+      }
+      if (full.end > inside) alternatives.push(context.text(chars.slice(inside, full.end).join("")));
+      return `(pieces:(${chunks.map(chunk => `[${context.text(chars.slice(chunk.start, chunk.end).join(""))}]`).join(",")},),draw:[${alternatives.join("")}])`;
+    });
+    const rootText = chars.slice(full.start, full.end).join("");
+    const emergencyBody = Array.from(rootText).map((char, i, all) =>
+      `${context.text(char)}${i < all.length - 1 ? "#linebreak()" : ""}`).join("");
+    const legend = sorted.filter(span => spanStart(span) >= full.start && spanEnd(span) <= full.end)
+      .map(span => `${readingVisibleLabel(span)} (${spanStart(span)}–${spanEnd(span)})`).join(" / ");
+    const emergency = `${interlinearDiagnostic(key.join("/"), "legend", "available-width-exceeded")}${emergencyBody}#text(size:7pt,fill:primary-color)[${context.text(` 注釈を凡例に切替（幅不足）: ${legend}`)}]`;
+    output.push(`#reading-auto-span([${context.text(rootText)}],[${unit(full, false)}],(${alternatives.join(",")},),[${emergency}])`);
+    cursor = spanEnd(root);
   }
-  const content = parts.map(part => {
-    const anchors = spans.filter(span => Number(span.start) === part.start)
-      .map(span => safeAnchor(context, referenceKey(...key, String(span.id)))).join("");
-    if (!part.active.length || /^\s+$/u.test(part.text)) return anchors + context.text(part.text);
-    const roles = part.active.map(span => readingRoleLabel[String(span.role)] ?? String(span.role));
-    let body = context.text(part.text);
-    if (part.active.some(span => span.style === "underline" || span.style === "bracket"))
-      body = `#underline(stroke:0.65pt,offset:2pt)[${body}]`;
-    if (display === "detailed" && part.active.some(span => span.style === "overline"))
-      body = `#overline(stroke:0.65pt)[${body}]`;
-    return `${anchors}#reading-unit([${body}],(${roles.map(role => `[${context.text(role)}]`).join(",")} ,))`;
-  }).join("");
-  return `${interlinearDiagnostic(key.join("/"), "interlinear")}${content}`;
+  if (cursor < chars.length) output.push(context.text(chars.slice(cursor).join("")));
+  const content = output.join("");
+  return `${interlinearDiagnostic(key.join("/"), presentation)}${content}`;
 }
 
 const reading: ExtensionDefinition = {
@@ -813,7 +867,7 @@ const reading: ExtensionDefinition = {
     sentenceNumbers: boolean(true),
     paragraphNumbers: boolean(true),
     lineNumbers: boolean(false),
-    annotationPresentation: string({ enum: ["legend", "interlinear"], default: "legend" }),
+    annotationPresentation: string({ enum: ["legend", "interlinear", "hierarchy"], default: "legend" }),
     levels: { ...levels, default: {} },
     vocabulary: array(vocabulary, { default: [], maxItems: 300 }),
     vocabularyPlacement: string({
@@ -850,7 +904,7 @@ const reading: ExtensionDefinition = {
           context,
           `paragraphs[${p}].sentences[${i}].annotations`
         );
-        if (config.annotationPresentation === "interlinear") {
+        if (config.annotationPresentation === "interlinear" || config.annotationPresentation === "hierarchy") {
           const reason = readingFallbackReason(String(s.originalText), list(s.annotations));
           if (reason) context.issue(
             `paragraphs[${p}].sentences[${i}].annotations`,
@@ -943,14 +997,14 @@ const reading: ExtensionDefinition = {
           return `${safeAnchor(
             context,
             referenceKey(...parts)
-          )}${sentenceNumber}${config.annotationPresentation === "interlinear" && display !== "plain" && spans.length
-            ? renderReadingInline(text, spans, display, context, parts)
+          )}${sentenceNumber}${(config.annotationPresentation === "interlinear" || config.annotationPresentation === "hierarchy") && display !== "plain" && spans.length
+            ? renderReadingInline(text, spans, display, context, parts, String(config.annotationPresentation))
             : renderAnnotatedSentence(text, spans, display, context, parts)}`;
         })
         .join(context.text(" "));
       const legends = list(paragraph.sentences)
         .map((s) => {
-          if (config.annotationPresentation !== "interlinear")
+          if (config.annotationPresentation !== "interlinear" && config.annotationPresentation !== "hierarchy")
             return annotationLegend(String(s.originalText), list(s.annotations), display, context);
           if (display === "plain") return "";
           const text = String(s.originalText), spans = list(s.annotations);
@@ -982,18 +1036,57 @@ const reading: ExtensionDefinition = {
     const lineRule = config.lineNumbers
       ? "#counter(par.line).update(0)\n#set par.line(numbering:none)"
       : "#set par.line(numbering:none)";
-    return `${safeAnchor(
+    return `#layout(size => {
+  let reading-width = size.width
+  [${safeAnchor(
       context,
       referenceKey("passage", passage)
     )}#block(breakable:true,above:8pt,below:8pt)[#set par(justify:false,leading:0.8em)
-#let reading-unit(body, caption) = context {
-  let main = text(bottom-edge:"baseline", body)
-  let labels = caption.map(label => align(center,text(size:7pt,weight:"bold",label)))
-  box(baseline:(at:top,shift:-measure(main).height),stack(dir:ttb,spacing:2pt,main,..labels))
+#let reading-span-unit(body, entries) = context {
+  let main = text(bottom-edge:"baseline",body)
+  let width = measure(main).width
+  let role-color(role) = if role == "S" { rgb("#245d82") } else if role == "V" { rgb("#913c55") } else if role == "O" { rgb("#087772") } else if role == "C" { rgb("#74528e") } else { rgb("#655a51") }
+  let hierarchy = ${String(config.annotationPresentation === "hierarchy")}
+  let top-entries = if hierarchy { entries.filter(e => e.depth == 0) } else { () }
+  let top-rows = if top-entries.len() == 0 { () } else { (box(width:width,height:16pt)[
+    #for e in top-entries {
+      let x = measure(text(bottom-edge:"baseline",e.prefix)).width
+      let w = measure(text(bottom-edge:"baseline",e.body)).width
+      let ink = role-color(e.role)
+      if e.label != "" { place(top + left,dx:x,dy:0pt,box(width:w)[#align(center)[#text(size:7pt,weight:"bold",fill:ink,e.label)]]) }
+      if e.line { place(top + left,dx:x,dy:11pt,line(length:w,stroke:(paint:ink,thickness:0.65pt))) }
+      if e.line { place(top + left,dx:x,dy:11pt,line(length:if e.before { 1.5pt } else { 3pt },angle:90deg,stroke:(paint:ink,thickness:0.65pt))) }
+      if e.line { place(top + left,dx:x + w,dy:11pt,line(length:if e.after { 1.5pt } else { 3pt },angle:90deg,stroke:(paint:ink,thickness:0.65pt))) }
+    }
+  ],) }
+  let lower = if hierarchy { entries.filter(e => e.depth > 0) } else { entries }
+  let offset = if hierarchy { 1 } else { 0 }
+  let rows = if lower.len() == 0 { () } else { range(offset,calc.max(..lower.map(e => e.depth)) + 1).map(depth => box(width:width,height:15pt)[
+    #for e in lower.filter(e => e.depth == depth) {
+      let x = measure(text(bottom-edge:"baseline",e.prefix)).width
+      let w = measure(text(bottom-edge:"baseline",e.body)).width
+      let ink = if hierarchy { role-color(e.role) } else { black }
+      if e.line { place(top + left,dx:x,dy:3pt,line(length:w,stroke:(paint:ink,thickness:0.65pt))) }
+      if e.line and e.before { place(top + left,dx:x,dy:2pt,rect(width:0.65pt,height:3pt,fill:ink)) }
+      if e.line and e.after { place(top + left,dx:x + w - 0.65pt,dy:2pt,rect(width:0.65pt,height:3pt,fill:ink)) }
+      if e.label != "" { place(top + left,dx:x,dy:5pt,box(width:w)[#align(center)[#text(size:7pt,weight:"bold",fill:ink,e.label)]]) }
+    }
+  ]) }
+  box(baseline:(at:top,shift:-(if hierarchy and top-rows.len() > 0 { 16pt } else { 0pt }) - measure(main).height),stack(dir:ttb,spacing:0pt,..top-rows,main,..rows))
+}
+#let reading-auto-span(body, full, options, emergency) = context {
+  if measure(body).width <= reading-width - 12pt { full } else {
+    let limit = reading-width - 12pt
+    let selected = none
+    for option in options {
+      if selected == none and option.pieces.all(piece => measure(piece).width <= limit) { selected = option.draw }
+    }
+    if selected == none { emergency } else { selected }
+  }
 }
 ${
       config.title ? `#strong[${context.text(String(config.title))}]` : ""
-    }\n${lineRule}\n${paragraphs.join("\n")}\n${
+    }\n${lineRule}\n${config.annotationPresentation === "hierarchy" && display !== "plain" ? `#block(breakable:false,below:3pt)[#text(size:8pt)[役割色: #text(fill:rgb("#245d82"))[S 主語] / #text(fill:rgb("#913c55"))[V 動詞] / #text(fill:rgb("#087772"))[O 目的語] / #text(fill:rgb("#74528e"))[C 補語] / #text(fill:rgb("#655a51"))[M・その他 修飾等]]]\n` : ""}${paragraphs.join("\n")}\n${
       config.vocabularyPlacement === "passage-end"
         ? renderVocabulary(list(config.vocabulary), context)
         : ""
@@ -1012,7 +1105,8 @@ ${
               : context.text(String(note.text))
           }]`
       )
-      .join("\n")}]]`;
+      .join("\n")}]]]
+})`;
   },
   textSamples: (config) =>
     [

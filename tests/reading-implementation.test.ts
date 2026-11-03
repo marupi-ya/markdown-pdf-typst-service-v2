@@ -15,20 +15,50 @@ const sample = {
   id: "passage1", title: "", paragraphNumbers: false, sentenceNumbers: false,
   annotationPresentation: "interlinear", levels: { complete: "detailed", questions: "minimal" },
   paragraphs: [{ id: "p1", sentences: [{ id: "s1", originalText: "Students read books.", annotations: [
-    { id: "internal-outer", start: 0, end: 8, role: "S", style: "underline" },
-    { id: "internal-inner", start: 0, end: 8, role: "phrase", parent: "internal-outer" },
-    { id: "internal-third", start: 0, end: 8, role: "modifier", parent: "internal-inner" },
-    { id: "internal-v", start: 9, end: 13, role: "V" },
-    { id: "internal-o", start: 14, end: 19, role: "O" },
+    { id: "internal-outer", start: 0, end: 8, role: "S", label: "", style: "underline" },
+    { id: "internal-inner", start: 0, end: 8, role: "phrase", label: "", parent: "internal-outer" },
+    { id: "internal-third", start: 0, end: 8, role: "modifier", label: "", parent: "internal-inner" },
+    { id: "internal-v", start: 9, end: 13, role: "V", label: "" },
+    { id: "internal-o", start: 14, end: 19, role: "O", label: "" },
   ] }] }], vocabulary: [], notes: [], vocabularyPlacement: "passage-end", lineNumbers: false,
 };
 
 test("nested reading roles use compact parent-first lines without exposing IDs", () => {
   const rendered = source(sample);
-  assert.match(rendered, /reading-unit\(\[#underline/);
-  assert.match(rendered, /\(\[#text\("S"\)\],\[#text\("句"\)\],\[#text\("修飾"\)\]/);
+  assert.match(rendered, /reading-span-unit\(\[#text\("Students"\)\]/);
+  assert.match(rendered, /label:"S",depth:0/);
+  assert.match(rendered, /label:"句",depth:1/);
+  assert.match(rendered, /label:"修飾",depth:2/);
+  assert.equal((rendered.match(/label:"S",depth:0/g) ?? []).length, 6);
   assert.doesNotMatch(rendered, /Paragraph 1|internal-outer \[|internal-inner \[/);
   assert.match(rendered, /used:"interlinear"/);
+});
+
+test("one short phrase keeps one centered author label", () => {
+  const value = structuredClone(sample);
+  value.paragraphs[0].sentences[0].originalText = "The cook keeps a book warm.";
+  value.paragraphs[0].sentences[0].annotations = [
+    { id: "o1", start: 15, end: 21, role: "O", label: "O1", style: "underline" },
+  ];
+  const rendered = source(value);
+  assert.match(rendered, /reading-span-unit\(\[#text\("a book"\)\]/);
+  // The generated Typst contains measured alternatives; one is selected for output.
+  assert.equal((rendered.match(/label:"O1"/g) ?? []).length, 6);
+  assert.doesNotMatch(rendered, /label:"O",/);
+});
+
+test("hierarchy keeps author ranges and places outer roles above inner roles", () => {
+  const value = structuredClone(sample);
+  value.annotationPresentation = "hierarchy";
+  const rendered = source(value);
+  assert.match(rendered, /let hierarchy = true/);
+  assert.match(rendered, /label:"S",depth:0,role:"S"/);
+  assert.match(rendered, /label:"句",depth:1,role:"phrase"/);
+  assert.match(rendered, /label:"修飾",depth:2,role:"modifier"/);
+  assert.match(rendered, /top-entries = if hierarchy/);
+  assert.match(rendered, /lower = if hierarchy/);
+  assert.equal((rendered.match(/役割色:/g) ?? []).length, 1);
+  assert.doesNotMatch(rendered, /internal-outer \[|internal-inner \[/);
 });
 
 test("safe fallback shows labels and reason even at minimal display", () => {

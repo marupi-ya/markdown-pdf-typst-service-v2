@@ -745,6 +745,25 @@ function readingSpanOrder(spans: Mapping[]) {
     || Number(a.start) - Number(b.start) || Number(b.end) - Number(a.end));
 }
 
+/** Keep leaves below the prose; only overlapping ancestors need upper lanes. */
+export function readingAdaptivePlacement(spans: Mapping[]) {
+  const byId = new Map(spans.map(span => [String(span.id), span]));
+  const placement = new Map<Mapping, { side: "top" | "bottom"; lane: number }>();
+  for (const span of readingSpanOrder(spans).reverse()) {
+    const descendants = spans.filter(other => other !== span &&
+      (strictlyContains(span, other) ||
+        (spanStart(span) === spanStart(other) && spanEnd(span) === spanEnd(other) &&
+          isParentAncestor(span, other, byId))));
+    placement.set(span, descendants.length
+      ? { side: "top", lane: Math.max(...descendants.map(child => {
+          const childPlacement = placement.get(child);
+          return childPlacement?.side === "top" ? childPlacement.lane + 1 : 0;
+        })) }
+      : { side: "bottom", lane: 0 });
+  }
+  return placement;
+}
+
 function readingFallbackReason(text: string, spans: Mapping[]) {
   const sorted = readingSpanOrder(spans);
   const byId = new Map(spans.map(span => [String(span.id), span]));
@@ -799,6 +818,7 @@ function renderReadingInline(
   const fallback = (reason: string) => `${interlinearDiagnostic(key.join("/"), "legend", reason)}${renderAnnotatedSentence(text, spans, display, context, key, context.annotationAccent)}`;
   if (fallbackReason) return fallback(fallbackReason);
   const byId = new Map(spans.map(span => [String(span.id), span]));
+  const placements = readingAdaptivePlacement(spans);
   const roots = sorted.filter(span => readingSpanDepth(span, spans, byId) === 0)
     .sort((a, b) => spanStart(a) - spanStart(b));
   const output: string[] = [];
@@ -812,7 +832,8 @@ function renderReadingInline(
         const prefix = chars.slice(chunk.start, start).join("");
         const body = chars.slice(start, end).join("");
         const label = spanStart(span) >= chunk.start && spanStart(span) < chunk.end ? readingVisibleLabel(span) : "";
-        return `(prefix:${JSON.stringify(prefix)},body:${JSON.stringify(body)},label:${JSON.stringify(label)},depth:${readingSpanDepth(span, spans, byId)},role:${JSON.stringify(String(span.role))},line:${String(span.style !== "none")},before:${String(continued && spanStart(span) < chunk.start)},after:${String(continued && spanEnd(span) > chunk.end)})`;
+        const placement = placements.get(span)!;
+        return `(prefix:${JSON.stringify(prefix)},body:${JSON.stringify(body)},label:${JSON.stringify(label)},depth:${readingSpanDepth(span, spans, byId)},role:${JSON.stringify(String(span.role))},side:${JSON.stringify(placement.side)},lane:${placement.lane},line:${String(span.style !== "none")},before:${String(continued && spanStart(span) < chunk.start)},after:${String(continued && spanEnd(span) > chunk.end)})`;
       });
       const anchors = spans.filter(span => spanStart(span) >= chunk.start && spanStart(span) < chunk.end)
         .map(span => safeAnchor(context, referenceKey(...key, String(span.id)))).join("");
@@ -867,7 +888,7 @@ const reading: ExtensionDefinition = {
     sentenceNumbers: boolean(true),
     paragraphNumbers: boolean(true),
     lineNumbers: boolean(false),
-    annotationPresentation: string({ enum: ["legend", "interlinear", "hierarchy"], default: "legend" }),
+    annotationPresentation: string({ enum: ["legend", "interlinear", "hierarchy", "adaptive"], default: "legend" }),
     levels: { ...levels, default: {} },
     vocabulary: array(vocabulary, { default: [], maxItems: 300 }),
     vocabularyPlacement: string({
@@ -904,7 +925,7 @@ const reading: ExtensionDefinition = {
           context,
           `paragraphs[${p}].sentences[${i}].annotations`
         );
-        if (config.annotationPresentation === "interlinear" || config.annotationPresentation === "hierarchy") {
+        if (["interlinear", "hierarchy", "adaptive"].includes(String(config.annotationPresentation))) {
           const reason = readingFallbackReason(String(s.originalText), list(s.annotations));
           if (reason) context.issue(
             `paragraphs[${p}].sentences[${i}].annotations`,
@@ -997,14 +1018,14 @@ const reading: ExtensionDefinition = {
           return `${safeAnchor(
             context,
             referenceKey(...parts)
-          )}${sentenceNumber}${(config.annotationPresentation === "interlinear" || config.annotationPresentation === "hierarchy") && display !== "plain" && spans.length
+          )}${sentenceNumber}${["interlinear", "hierarchy", "adaptive"].includes(String(config.annotationPresentation)) && display !== "plain" && spans.length
             ? renderReadingInline(text, spans, display, context, parts, String(config.annotationPresentation))
             : renderAnnotatedSentence(text, spans, display, context, parts)}`;
         })
         .join(context.text(" "));
       const legends = list(paragraph.sentences)
         .map((s) => {
-          if (config.annotationPresentation !== "interlinear" && config.annotationPresentation !== "hierarchy")
+          if (!["interlinear", "hierarchy", "adaptive"].includes(String(config.annotationPresentation)))
             return annotationLegend(String(s.originalText), list(s.annotations), display, context);
           if (display === "plain") return "";
           const text = String(s.originalText), spans = list(s.annotations);
@@ -1047,9 +1068,11 @@ const reading: ExtensionDefinition = {
   let width = measure(main).width
   let role-color(role) = if role == "S" { rgb("#245d82") } else if role == "V" { rgb("#913c55") } else if role == "O" { rgb("#087772") } else if role == "C" { rgb("#74528e") } else { rgb("#655a51") }
   let hierarchy = ${String(config.annotationPresentation === "hierarchy")}
-  let top-entries = if hierarchy { entries.filter(e => e.depth == 0) } else { () }
-  let top-rows = if top-entries.len() == 0 { () } else { (box(width:width,height:16pt)[
-    #for e in top-entries {
+  let adaptive = ${String(config.annotationPresentation === "adaptive")}
+  let top-entries = if hierarchy { entries.filter(e => e.depth == 0) } else if adaptive { entries.filter(e => e.side == "top") } else { () }
+  let top-count = if top-entries.len() == 0 { 0 } else if adaptive { calc.max(..top-entries.map(e => e.lane)) + 1 } else { 1 }
+  let top-rows = range(0,top-count).rev().map(lane => box(width:width,height:16pt)[
+    #for e in top-entries.filter(e => not adaptive or e.lane == lane) {
       let x = measure(text(bottom-edge:"baseline",e.prefix)).width
       let w = measure(text(bottom-edge:"baseline",e.body)).width
       let ink = role-color(e.role)
@@ -1058,21 +1081,21 @@ const reading: ExtensionDefinition = {
       if e.line { place(top + left,dx:x,dy:11pt,line(length:if e.before { 1.5pt } else { 3pt },angle:90deg,stroke:(paint:ink,thickness:0.65pt))) }
       if e.line { place(top + left,dx:x + w,dy:11pt,line(length:if e.after { 1.5pt } else { 3pt },angle:90deg,stroke:(paint:ink,thickness:0.65pt))) }
     }
-  ],) }
-  let lower = if hierarchy { entries.filter(e => e.depth > 0) } else { entries }
+  ])
+  let lower = if hierarchy { entries.filter(e => e.depth > 0) } else if adaptive { entries.filter(e => e.side == "bottom") } else { entries }
   let offset = if hierarchy { 1 } else { 0 }
-  let rows = if lower.len() == 0 { () } else { range(offset,calc.max(..lower.map(e => e.depth)) + 1).map(depth => box(width:width,height:15pt)[
-    #for e in lower.filter(e => e.depth == depth) {
+  let rows = if lower.len() == 0 { () } else { range(offset,if adaptive { 1 } else { calc.max(..lower.map(e => e.depth)) + 1 }).map(depth => box(width:width,height:15pt)[
+    #for e in lower.filter(e => adaptive or e.depth == depth) {
       let x = measure(text(bottom-edge:"baseline",e.prefix)).width
       let w = measure(text(bottom-edge:"baseline",e.body)).width
-      let ink = if hierarchy { role-color(e.role) } else { black }
+      let ink = if hierarchy or adaptive { role-color(e.role) } else { black }
       if e.line { place(top + left,dx:x,dy:3pt,line(length:w,stroke:(paint:ink,thickness:0.65pt))) }
       if e.line and e.before { place(top + left,dx:x,dy:2pt,rect(width:0.65pt,height:3pt,fill:ink)) }
       if e.line and e.after { place(top + left,dx:x + w - 0.65pt,dy:2pt,rect(width:0.65pt,height:3pt,fill:ink)) }
       if e.label != "" { place(top + left,dx:x,dy:5pt,box(width:w)[#align(center)[#text(size:7pt,weight:"bold",fill:ink,e.label)]]) }
     }
   ]) }
-  box(baseline:(at:top,shift:-(if hierarchy and top-rows.len() > 0 { 16pt } else { 0pt }) - measure(main).height),stack(dir:ttb,spacing:0pt,..top-rows,main,..rows))
+  box(baseline:(at:top,shift:-(16pt * top-count) - measure(main).height),stack(dir:ttb,spacing:0pt,..top-rows,main,..rows))
 }
 #let reading-auto-span(body, full, options, emergency) = context {
   if measure(body).width <= reading-width - 12pt { full } else {
@@ -1086,7 +1109,7 @@ const reading: ExtensionDefinition = {
 }
 ${
       config.title ? `#strong[${context.text(String(config.title))}]` : ""
-    }\n${lineRule}\n${config.annotationPresentation === "hierarchy" && display !== "plain" ? `#block(breakable:false,below:3pt)[#text(size:8pt)[役割色: #text(fill:rgb("#245d82"))[S 主語] / #text(fill:rgb("#913c55"))[V 動詞] / #text(fill:rgb("#087772"))[O 目的語] / #text(fill:rgb("#74528e"))[C 補語] / #text(fill:rgb("#655a51"))[M・その他 修飾等]]]\n` : ""}${paragraphs.join("\n")}\n${
+    }\n${lineRule}\n${["hierarchy", "adaptive"].includes(String(config.annotationPresentation)) && display !== "plain" ? `#block(breakable:false,below:3pt)[#text(size:8pt)[役割色: #text(fill:rgb("#245d82"))[S 主語] / #text(fill:rgb("#913c55"))[V 動詞] / #text(fill:rgb("#087772"))[O 目的語] / #text(fill:rgb("#74528e"))[C 補語] / #text(fill:rgb("#655a51"))[M・その他 修飾等]]]\n` : ""}${paragraphs.join("\n")}\n${
       config.vocabularyPlacement === "passage-end"
         ? renderVocabulary(list(config.vocabulary), context)
         : ""
@@ -1241,3 +1264,4 @@ const reference: ExtensionDefinition = {
 };
 for (const definition of [syntax, translation, reading, vocab, reference])
   extensionRegistry.register(definition);
+

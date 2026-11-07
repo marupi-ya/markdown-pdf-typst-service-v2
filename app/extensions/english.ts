@@ -2,6 +2,7 @@ import {
   extensionRegistry,
   object,
   string,
+  number as numeric,
   array,
   id,
   boolean,
@@ -128,6 +129,7 @@ const sentence = object({
   id: id(),
   originalText: string({ required: true, minLength: 1 }),
   annotations,
+  functionGroups,
 });
 const list = (value: unknown) => value as Mapping[];
 export const englishTargetKey = (value: Mapping) =>
@@ -764,6 +766,29 @@ export function readingAdaptivePlacement(spans: Mapping[]) {
   return placement;
 }
 
+/** All roles stay below: inner roles sit next to the prose, outer roles farther away. */
+export function readingStackedPlacement(spans: Mapping[]) {
+  return new Map([...readingAdaptivePlacement(spans)].map(([span, placement]) =>
+    [span, { side: "bottom" as const, lane: placement.side === "top" ? placement.lane + 1 : 0 }]));
+}
+
+/** Slice display glyphs using source offsets. An edge belongs to exactly one slice. */
+export function readingDecoratedRange(text: string, groups: Mapping[], start: number, end: number) {
+  if (end <= start) return "";
+  const chars = Array.from(text);
+  if (!groups.length) return chars.slice(start, end).join("");
+  return functionGroupSegments(text, groups).flatMap(segment => {
+    if (segment.kind === "delimiter") {
+      const included = segment.edge === "open"
+        ? start <= segment.boundary && segment.boundary < end
+        : start < segment.boundary && segment.boundary <= end;
+      return included ? [segment.text] : [];
+    }
+    const a = Math.max(start, segment.start), b = Math.min(end, segment.end);
+    return b > a ? [chars.slice(a, b).join("")] : [];
+  }).join("");
+}
+
 function readingFallbackReason(text: string, spans: Mapping[]) {
   const sorted = readingSpanOrder(spans);
   const byId = new Map(spans.map(span => [String(span.id), span]));
@@ -810,34 +835,35 @@ export function readingSpanChunks(text: string, start: number, end: number, span
 
 function renderReadingInline(
   text: string, spans: Mapping[], display: string,
-  context: ExtensionRenderContext, key: string[], presentation: string
+  context: ExtensionRenderContext, key: string[], presentation: string, groups: Mapping[] = []
 ) {
   const chars = Array.from(text);
   const sorted = readingSpanOrder(spans);
   const fallbackReason = readingFallbackReason(text, spans);
-  const fallback = (reason: string) => `${interlinearDiagnostic(key.join("/"), "legend", reason)}${renderAnnotatedSentence(text, spans, display, context, key, context.annotationAccent)}`;
+  const fallback = (reason: string) => `${interlinearDiagnostic(key.join("/"), "legend", reason)}${renderAnnotatedSentence(text, spans, display, context, key, context.annotationAccent, groups)}`;
   if (fallbackReason) return fallback(fallbackReason);
   const byId = new Map(spans.map(span => [String(span.id), span]));
-  const placements = readingAdaptivePlacement(spans);
+  const placements = presentation === "stacked" ? readingStackedPlacement(spans) : readingAdaptivePlacement(spans);
+  const slice = (start: number, end: number) => readingDecoratedRange(text, groups, start, end);
   const roots = sorted.filter(span => readingSpanDepth(span, spans, byId) === 0)
     .sort((a, b) => spanStart(a) - spanStart(b));
   const output: string[] = [];
   let cursor = 0;
   for (const root of roots) {
-    if (spanStart(root) > cursor) output.push(context.text(chars.slice(cursor, spanStart(root)).join("")));
+    if (spanStart(root) > cursor) output.push(context.text(slice(cursor, spanStart(root))));
     const unit = (chunk: { start: number; end: number }, continued: boolean) => {
       const local = sorted.filter(span => spanStart(span) < chunk.end && spanEnd(span) > chunk.start);
       const entries = local.map(span => {
         const start = Math.max(chunk.start, spanStart(span)), end = Math.min(chunk.end, spanEnd(span));
-        const prefix = chars.slice(chunk.start, start).join("");
-        const body = chars.slice(start, end).join("");
+        const prefix = slice(chunk.start, start);
+        const body = slice(start, end);
         const label = spanStart(span) >= chunk.start && spanStart(span) < chunk.end ? readingVisibleLabel(span) : "";
         const placement = placements.get(span)!;
         return `(prefix:${JSON.stringify(prefix)},body:${JSON.stringify(body)},label:${JSON.stringify(label)},depth:${readingSpanDepth(span, spans, byId)},role:${JSON.stringify(String(span.role))},side:${JSON.stringify(placement.side)},lane:${placement.lane},line:${String(span.style !== "none")},before:${String(continued && spanStart(span) < chunk.start)},after:${String(continued && spanEnd(span) > chunk.end)})`;
       });
       const anchors = spans.filter(span => spanStart(span) >= chunk.start && spanStart(span) < chunk.end)
         .map(span => safeAnchor(context, referenceKey(...key, String(span.id)))).join("");
-      return `${anchors}#reading-span-unit([${context.text(chars.slice(chunk.start, chunk.end).join(""))}],(${entries.join(",")},))`;
+      return `${anchors}#reading-span-unit([${context.text(slice(chunk.start, chunk.end))}],(${entries.join(",")},))`;
     };
     const full = { start: spanStart(root), end: spanEnd(root) };
     const alternatives = [90, 60, 26, 10, 5].map(maxChars => {
@@ -845,14 +871,14 @@ function renderReadingInline(
       const alternatives: string[] = [];
       let inside = full.start;
       for (const chunk of chunks) {
-        if (chunk.start > inside) alternatives.push(context.text(chars.slice(inside, chunk.start).join("")));
+        if (chunk.start > inside) alternatives.push(context.text(slice(inside, chunk.start)));
         alternatives.push(unit(chunk, true));
         inside = chunk.end;
       }
-      if (full.end > inside) alternatives.push(context.text(chars.slice(inside, full.end).join("")));
-      return `(pieces:(${chunks.map(chunk => `[${context.text(chars.slice(chunk.start, chunk.end).join(""))}]`).join(",")},),draw:[${alternatives.join("")}])`;
+      if (full.end > inside) alternatives.push(context.text(slice(inside, full.end)));
+      return `(pieces:(${chunks.map(chunk => `[${context.text(slice(chunk.start, chunk.end))}]`).join(",")},),draw:[${alternatives.join("")}])`;
     });
-    const rootText = chars.slice(full.start, full.end).join("");
+    const rootText = slice(full.start, full.end);
     const emergencyBody = Array.from(rootText).map((char, i, all) =>
       `${context.text(char)}${i < all.length - 1 ? "#linebreak()" : ""}`).join("");
     const legend = sorted.filter(span => spanStart(span) >= full.start && spanEnd(span) <= full.end)
@@ -861,9 +887,31 @@ function renderReadingInline(
     output.push(`#reading-auto-span([${context.text(rootText)}],[${unit(full, false)}],(${alternatives.join(",")},),[${emergency}])`);
     cursor = spanEnd(root);
   }
-  if (cursor < chars.length) output.push(context.text(chars.slice(cursor).join("")));
+  if (cursor < chars.length) output.push(context.text(slice(cursor, chars.length)));
   const content = output.join("");
   return `${interlinearDiagnostic(key.join("/"), presentation)}${content}`;
+}
+
+function readingStackedUnit(labelSize: number) {
+  return `#let reading-span-unit(body, entries) = context {
+  let main = text(bottom-edge:"baseline",body)
+  let width = measure(main).width
+  let role-color(role) = if role == "S" { rgb("#245d82") } else if role == "V" { rgb("#913c55") } else if role == "O" { rgb("#087772") } else if role == "C" { rgb("#74528e") } else { rgb("#655a51") }
+  let row-height = ${labelSize + 8}pt
+  let count = if entries.len() == 0 { 0 } else { calc.max(..entries.map(e => e.lane)) + 1 }
+  let rows = range(count).map(lane => box(width:width,height:row-height)[
+    #for e in entries.filter(e => e.lane == lane) {
+      let x = measure(text(bottom-edge:"baseline",e.prefix)).width
+      let w = measure(text(bottom-edge:"baseline",e.body)).width
+      let ink = role-color(e.role)
+      if e.line { place(top + left,dx:x,dy:3pt,line(length:w,stroke:(paint:ink,thickness:0.65pt))) }
+      if e.line and e.before { place(top + left,dx:x,dy:2pt,rect(width:0.65pt,height:3pt,fill:ink)) }
+      if e.line and e.after { place(top + left,dx:x + w - 0.65pt,dy:2pt,rect(width:0.65pt,height:3pt,fill:ink)) }
+      if e.label != "" { place(top + left,dx:x,dy:5pt,box(width:w)[#align(center)[#text(size:${labelSize}pt,weight:"bold",fill:ink,e.label)]]) }
+    }
+  ])
+  box(baseline:(at:top,shift:-measure(main).height),stack(dir:ttb,spacing:0pt,main,..rows))
+}`;
 }
 
 const reading: ExtensionDefinition = {
@@ -888,7 +936,8 @@ const reading: ExtensionDefinition = {
     sentenceNumbers: boolean(true),
     paragraphNumbers: boolean(true),
     lineNumbers: boolean(false),
-    annotationPresentation: string({ enum: ["legend", "interlinear", "hierarchy", "adaptive"], default: "legend" }),
+    annotationPresentation: string({ enum: ["legend", "interlinear", "hierarchy", "adaptive", "stacked"], default: "legend" }),
+    annotationLabelSize: numeric({ minimum: 7, maximum: 11, default: 8.5 }),
     levels: { ...levels, default: {} },
     vocabulary: array(vocabulary, { default: [], maxItems: 300 }),
     vocabularyPlacement: string({
@@ -925,7 +974,11 @@ const reading: ExtensionDefinition = {
           context,
           `paragraphs[${p}].sentences[${i}].annotations`
         );
-        if (["interlinear", "hierarchy", "adaptive"].includes(String(config.annotationPresentation))) {
+        validateFunctionGroups(String(s.originalText), list(s.functionGroups ?? []), {
+          ...context,
+          issue: (path, code, message, severity) => context.issue(`paragraphs[${p}].sentences[${i}].${path}`, code, message, severity),
+        });
+        if (["interlinear", "hierarchy", "adaptive", "stacked"].includes(String(config.annotationPresentation))) {
           const reason = readingFallbackReason(String(s.originalText), list(s.annotations));
           if (reason) context.issue(
             `paragraphs[${p}].sentences[${i}].annotations`,
@@ -1018,18 +1071,19 @@ const reading: ExtensionDefinition = {
           return `${safeAnchor(
             context,
             referenceKey(...parts)
-          )}${sentenceNumber}${["interlinear", "hierarchy", "adaptive"].includes(String(config.annotationPresentation)) && display !== "plain" && spans.length
-            ? renderReadingInline(text, spans, display, context, parts, String(config.annotationPresentation))
-            : renderAnnotatedSentence(text, spans, display, context, parts)}`;
+          )}${sentenceNumber}${["interlinear", "hierarchy", "adaptive", "stacked"].includes(String(config.annotationPresentation)) && display !== "plain" && spans.length
+            ? renderReadingInline(text, spans, display, context, parts, String(config.annotationPresentation), list(s.functionGroups ?? []))
+            : renderAnnotatedSentence(text, spans, display, context, parts, undefined, list(s.functionGroups ?? []))}`;
         })
         .join(context.text(" "));
       const legends = list(paragraph.sentences)
         .map((s) => {
-          if (!["interlinear", "hierarchy", "adaptive"].includes(String(config.annotationPresentation)))
+          if (!["interlinear", "hierarchy", "adaptive", "stacked"].includes(String(config.annotationPresentation)))
             return annotationLegend(String(s.originalText), list(s.annotations), display, context);
           if (display === "plain") return "";
           const text = String(s.originalText), spans = list(s.annotations);
           const reason = readingFallbackReason(text, spans);
+          if (config.annotationPresentation === "stacked" && display === "minimal" && !reason) return "";
           const detail = display === "detailed"
             ? interlinearDetails(text, spans, display, context, Boolean(reason), false)
             : reason ? interlinearDetails(text, spans, display, context, true, false) : "";
@@ -1063,7 +1117,7 @@ const reading: ExtensionDefinition = {
       context,
       referenceKey("passage", passage)
     )}#block(breakable:true,above:8pt,below:8pt)[#set par(justify:false,leading:0.8em)
-#let reading-span-unit(body, entries) = context {
+${config.annotationPresentation === "stacked" ? readingStackedUnit(Number(config.annotationLabelSize ?? 8.5)) : `#let reading-span-unit(body, entries) = context {
   let main = text(bottom-edge:"baseline",body)
   let width = measure(main).width
   let role-color(role) = if role == "S" { rgb("#245d82") } else if role == "V" { rgb("#913c55") } else if role == "O" { rgb("#087772") } else if role == "C" { rgb("#74528e") } else { rgb("#655a51") }
@@ -1096,10 +1150,10 @@ const reading: ExtensionDefinition = {
     }
   ]) }
   box(baseline:(at:top,shift:-(16pt * top-count) - measure(main).height),stack(dir:ttb,spacing:0pt,..top-rows,main,..rows))
-}
+}`}
 #let reading-auto-span(body, full, options, emergency) = context {
-  if measure(body).width <= reading-width - 12pt { full } else {
-    let limit = reading-width - 12pt
+  if measure(body).width <= ${config.annotationPresentation === "stacked" ? "calc.min(reading-width - 12pt, 210pt)" : "reading-width - 12pt"} { full } else {
+    let limit = ${config.annotationPresentation === "stacked" ? "calc.min(reading-width - 12pt, 210pt)" : "reading-width - 12pt"}
     let selected = none
     for option in options {
       if selected == none and option.pieces.all(piece => measure(piece).width <= limit) { selected = option.draw }
@@ -1109,7 +1163,7 @@ const reading: ExtensionDefinition = {
 }
 ${
       config.title ? `#strong[${context.text(String(config.title))}]` : ""
-    }\n${lineRule}\n${["hierarchy", "adaptive"].includes(String(config.annotationPresentation)) && display !== "plain" ? `#block(breakable:false,below:3pt)[#text(size:8pt)[役割色: #text(fill:rgb("#245d82"))[S 主語] / #text(fill:rgb("#913c55"))[V 動詞] / #text(fill:rgb("#087772"))[O 目的語] / #text(fill:rgb("#74528e"))[C 補語] / #text(fill:rgb("#655a51"))[M・その他 修飾等]]]\n` : ""}${paragraphs.join("\n")}\n${
+    }\n${lineRule}\n${["hierarchy", "adaptive", "stacked"].includes(String(config.annotationPresentation)) && display !== "plain" ? `#block(breakable:false,below:3pt)[#text(size:8pt)[役割色: #text(fill:rgb("#245d82"))[S 主語] / #text(fill:rgb("#913c55"))[V 動詞] / #text(fill:rgb("#087772"))[O 目的語] / #text(fill:rgb("#74528e"))[C 補語] / #text(fill:rgb("#655a51"))[M・その他 修飾等]]]\n` : ""}${paragraphs.join("\n")}\n${
       config.vocabularyPlacement === "passage-end"
         ? renderVocabulary(list(config.vocabulary), context)
         : ""
@@ -1144,6 +1198,9 @@ ${
     summary: "段落・文・範囲IDを持つ改ページ可能な読解長文。",
     restrictions: [
       "長文全体をatomicにしない。文番号は原文外、行番号はTypst par.lineの余白要素。",
+      "各文のfunctionGroupsで名詞〈〉・形容詞〔〕・副詞()を指定する。原文と範囲は変更せず、plainでは非表示。交差・同範囲・不正範囲はエラー。",
+      "annotationPresentation: stacked は全役割を英文の下に表示し、内側を英文の直下、外側をその下に置く。annotationLabelSizeは7〜11pt、既定8.5pt（stacked専用）。",
+      "stackedは段落と本文の順を保ち、長句を実測した幅に応じて語境界で折り返す。文全体のカード化・縮小・1頁への固定はしない。既存のlegend/interlinear/hierarchy/adaptiveも保持。",
       "文番号は長文内の通し番号、Sentenceの参照表示は段落内番号。",
       "行番号は印刷レイアウトで変動するため、設問の永続参照にはIDを使う。",
       "語注の対象はIDで指定。段落末または長文末へ配置する。",

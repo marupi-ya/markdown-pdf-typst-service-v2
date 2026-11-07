@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { generateTypstProject } from "../app/pdf-engine/typst/generator";
 import { typstErrorPayload } from "../app/pdf-engine/typst/errors";
 import { validateTypstCompileRequest } from "../app/pdf-engine/typst/request";
+import { matchesReadingText, readingTextSamples } from "../app/pdf-engine/typst/reading-text-validation";
 import type {
   GeneratedTypstProject,
   TypstCompileErrorPayload,
@@ -187,7 +188,8 @@ async function optionalTextValidation(pdfPath: string, project: GeneratedTypstPr
       .map((value) => value.replace(/\s+/gu, ""))
       .filter((value) => value.length >= 4)
       .slice(0, 8);
-    const missing = expected.filter((value) => !extracted.includes(value));
+    const readingSamples = readingTextSamples(project.ast);
+    const missing = expected.filter((value) => !extracted.includes(value) && !readingSamples.some(sample => sample.original.replace(/\s+/gu, "") === value && matchesReadingText(result.stdout, sample)));
     if (expected.length && missing.length === expected.length) {
       throw new TypstCompilerError({
         stage: "validation",

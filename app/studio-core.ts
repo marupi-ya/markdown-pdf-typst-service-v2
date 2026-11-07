@@ -35,6 +35,7 @@ export type StudioBlock = {
   title?: string;
   attributes?: Record<string, string>;
   figureType?: string;
+  figureScale?: number;
   params?: Record<string, string>;
   raw?: string;
   continuation?: boolean;
@@ -355,11 +356,11 @@ const KNOWN_BLOCK_ATTRIBUTES: Record<string, Set<string>> = {
   definition: new Set(["title"]),
   "key-point": new Set(["title"]),
   caution: new Set(["title"]),
-  example: new Set(["title"]),
-  exercise: new Set(["id", "title"]),
+  example: new Set(["title", "keep-together"]),
+  exercise: new Set(["id", "title", "keep-together"]),
   solution: new Set(["for", "title"]),
   summary: new Set(["title"]),
-  "page-break": new Set(),
+  "page-break": new Set(["studio-visual"]),
 };
 
 const ATTRIBUTE_TYPOS: Record<string, string> = {
@@ -2111,6 +2112,7 @@ function baseParse(source: string, allowFrontmatter = true) {
         blocks.push(
           makeBlock("page-break", lineNumber, end + 1, "", {
             blockName: name,
+            attributes,
             breakPolicy: "atomic",
           }),
         );
@@ -2165,11 +2167,14 @@ function baseParse(source: string, allowFrontmatter = true) {
       const end = close === -1 ? lines.length - 1 : close;
       const raw = lines.slice(cursor + 1, end).join("\n");
       const figureInfo = info.match(/^figure\s+([\w-]+)/);
-      if (figureInfo || info === "mermaid") {
+      const mermaid = /^mermaid(?:\s+studio-scale=\d+)?$/u.test(info);
+      const scale = Number(info.match(/(?:^|\s)studio-scale=(\d+)(?:\s|$)/u)?.[1]);
+      if (figureInfo || mermaid) {
         const figureType = figureInfo?.[1] ?? "mermaid";
         blocks.push(
           makeBlock("figure", lineNumber, end + 1, "", {
             figureType,
+            figureScale: scale >= 30 && scale <= 100 ? scale : undefined,
             params: figureType === "mermaid" ? {} : parseParams(raw),
             raw,
             breakPolicy: "atomic",
@@ -2858,7 +2863,9 @@ export function createRenderDocument(
   if (outputMode === "questions" || outputMode === "split") {
     return {
       ...parsed,
-      blocks: parsed.blocks.filter((block) => block.blockName !== "solution"),
+      blocks: parsed.blocks.filter((block, index) => block.blockName !== "solution" &&
+        !(block.type === "page-break" && block.attributes?.["studio-visual"] === "true" &&
+          parsed.blocks[index + 1]?.blockName === "solution")),
       outputMode,
       includeQuestionInAnswer,
     };
@@ -2876,10 +2883,22 @@ export function createRenderDocument(
   }
 
   const blocks: StudioBlock[] = [];
+  const visualBreaks = new Map<string, StudioBlock>();
+  parsed.blocks.forEach((block, index) => {
+    const before = parsed.blocks[index - 1];
+    if (before?.type === "page-break" && before.attributes?.["studio-visual"] === "true") {
+      visualBreaks.set(block.id, before);
+    }
+  });
+  const appendBreak = (target: StudioBlock) => {
+    const before = visualBreaks.get(target.id);
+    if (before && blocks.length && blocks.at(-1)?.type !== "page-break") blocks.push(before);
+  };
   for (const solution of parsed.blocks.filter((block) => block.blockName === "solution")) {
     const reference = solution.attributes?.for;
     const exercise = reference ? exercises.get(reference) : undefined;
     if (exercise) {
+      appendBreak(exercise);
       if (includeQuestionInAnswer) {
         blocks.push({
           ...exercise,
@@ -2906,6 +2925,7 @@ export function createRenderDocument(
         });
       }
     }
+    appendBreak(solution);
     blocks.push(solution);
   }
 

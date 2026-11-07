@@ -1,3 +1,4 @@
+import { MAX_LAYOUT_BYTES, PDF_LAYOUT_CONTENT_TYPE } from "../app/pdf-engine/typst/layout-inspection";
 import { MATH_C_TYPES } from "../app/math-c/syntax";
 import { extensionRegistry } from "../app/extensions";
 import { TYPST_MAX_REQUEST_BYTES } from "../app/material-assets";
@@ -68,9 +69,15 @@ const server = createServer(async (request, response) => {
     try {
       const input = await readJson(request);
       const result = await compileWithTypstCli(input);
+      const layout = result.layoutInspection
+        ? Buffer.from(JSON.stringify({ ...result.layoutInspection, warnings: result.warnings.slice(0, 150) }))
+        : null;
+      const sidecar = layout && layout.length <= MAX_LAYOUT_BYTES ? layout : null;
+      const prefix = sidecar ? Buffer.alloc(4) : null;
+      if (prefix && sidecar) prefix.writeUInt32BE(sidecar.length);
       response.writeHead(200, {
-        "content-type": "application/pdf",
-        "content-length": String(result.pdf.length),
+        "content-type": sidecar ? PDF_LAYOUT_CONTENT_TYPE : "application/pdf",
+        "content-length": String(result.pdf.length + (sidecar ? sidecar.length + 4 : 0)),
         "cache-control": "no-store",
         "content-disposition": "inline; filename=material.pdf",
         "x-content-type-options": "nosniff",
@@ -79,6 +86,7 @@ const server = createServer(async (request, response) => {
         "x-text-validation": result.textValidation.performed ? `${result.textValidation.matchedSamples}/${result.textValidation.checkedSamples}` : "unavailable",
         "x-studio-warnings": encodeURIComponent(JSON.stringify(result.warnings.slice(0,6).map(warning=>({...warning,message:warning.message.slice(0,110)})))),
       });
+      if (prefix && sidecar) { response.write(prefix); response.write(sidecar); }
       response.end(result.pdf);
     } catch (error) {
       const payload = error instanceof TypstCompilerError ? error.payload : typstErrorPayload(error, "compiler");

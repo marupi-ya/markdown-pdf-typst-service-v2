@@ -72,6 +72,7 @@ type RenderContext = {
   resourceFallbacks?:Record<string,string>;
   outputMode?:"complete"|"questions"|"answers";
   boxVariant?: Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>["variant"];
+  inspectLayout?: boolean;
   conclusion?: boolean;
   finalMath?: boolean;
 };
@@ -83,7 +84,21 @@ function isConclusionParagraph(node: TypstBlockNode) {
   );
 }
 
-function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>) {
+function trace(node: TypstBlockNode, context: RenderContext, edge: "start" | "end") {
+  if (!context.inspectLayout) return "";
+  return `#studio-trace(${typstString(node.id)}, ${node.sourceLine}, ${typstString(node.type)}, "${edge}")`;
+}
+
+function tracedBody(node: TypstBlockNode, context: RenderContext, body: string) {
+  if (!context.inspectLayout) return body;
+  const end = trace(node, context, "end");
+  const boundary = node.type === "Figure" ? `#place(right)[${end}]` : end;
+  return `${trace(node, context, "start")}
+${body}
+${boundary}`;
+}
+
+function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>, context: RenderContext) {
   const columns = Math.max(1, node.header.length, ...node.rows.map((row) => row.length));
   const pad = (row: TypstInlineNode[][]) => [
     ...row,
@@ -99,6 +114,7 @@ function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>) {
 #block(above: 7pt, below: 8pt)[
   #set par(justify: false)
   #set table.cell(breakable: true)
+  ${trace(node, context, "start")}
   #table(
     columns: (${columnWidths},),
     inset: (x: 5pt, y: 4pt),
@@ -110,6 +126,7 @@ function renderTable(node: Extract<TypstBlockNode, { type: "Table" }>) {
     ),
     ${rows}
   )
+  ${trace(node, context, "end")}
 ]`;
 }
 
@@ -135,30 +152,36 @@ function renderBox(node: Extract<TypstBlockNode, { type: "Problem" | "Answer" | 
     conclusion: node.variant === "solution" && isConclusionParagraph(child),
     finalMath: node.variant === "solution" && conclusionMath.has(index),
   })).join("\n\n");
+  const box = (breakable: string) => `studio-box(
+    ${typstString(kind)},
+    ${typstString(node.variant)},
+    [${trace(node, context, "start")}${renderInlines(node.title)}],
+    breakable: ${breakable},
+    [
+      ${body}
+      ${trace(node, context, "end")}
+    ],
+  )`;
+  const rendered = node.requestedKeep
+    ? `#studio-keep(${node.sourceLine}, split => ${box("split")})`
+    : `#${box(node.policy.allowBreak ? "true" : "false")}`;
   return `${marker(node)}
-#studio-box(
-  ${typstString(kind)},
-  ${typstString(node.variant)},
-  [${renderInlines(node.title)}],
-  breakable: ${node.policy.allowBreak ? "true" : "false"},
-  [
-    ${body}
-  ],
-)`;
+${rendered}`;
 }
 
 function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string {
   if (node.type === "Extension") {
     const definition = extensionRegistry.get(node.extensionType,"content")!;
-    return `${marker(node)}\n${definition.render(node.config,{sourceLine:node.sourceLine,outputMode:node.outputMode,references:context.references,annotationAccent:context.annotationAccent,text:value => `#text(${typstString(value)})`,inline:value => renderInlines(parseTypstInline(value,node.sourceLine))})}`;
+    const body = definition.render(node.config,{sourceLine:node.sourceLine,outputMode:node.outputMode,references:context.references,annotationAccent:context.annotationAccent,text:value => `#text(${typstString(value)})`,inline:value => renderInlines(parseTypstInline(value,node.sourceLine))});
+    return `${marker(node)}\n${tracedBody(node, context, body)}`;
   }
   if (node.type === "Fallback") return `${marker(node)}\n#block(breakable: true)[#strong[#text(${typstString(node.extensionType)})：${renderInlines([{type:"InlineText",value:node.message}])}]\n#raw(${typstString(node.raw)}, block:true)]`;
   if (node.type === "Heading") {
-    return `${marker(node)}\n#heading(level: ${node.level})[${renderInlines(node.children)}]`;
+    return `${marker(node)}\n#heading(level: ${node.level})[${trace(node, context, "start")}${renderInlines(node.children)}${trace(node, context, "end")}]`;
   }
   if (node.type === "Paragraph") {
     const renderer = node.quoted ? "studio-quote" : context.conclusion ? "studio-conclusion" : "studio-par";
-    return `${marker(node)}\n#${renderer}[${renderInlines(node.children)}]`;
+    return `${marker(node)}\n#${renderer}[${trace(node, context, "start")}${renderInlines(node.children)}${trace(node, context, "end")}]`;
   }
   if (node.type === "DisplayMath") {
     const math = latexToTypstMath(node.latex, node.sourceLine);
@@ -166,46 +189,53 @@ function renderBlock(node: TypstBlockNode, context: RenderContext = {}): string 
     const wrapped = lines ? `, wrapped: [$ ${lines.map(line => latexToTypstMath(line,node.sourceLine)).join(" \\\n ")} $]` : "";
     if (context.finalMath) {
       return `${marker(node)}
-#studio-final-display-math[#studio-fit-math(source-line: ${node.sourceLine}${wrapped})[$ ${math} $]]`;
+${tracedBody(node, context, `#studio-final-display-math[#studio-fit-math(source-line: ${node.sourceLine}${wrapped})[$ ${math} $]]`)}`;
     }
     const emphasis = context.boxVariant === "definition";
     return `${marker(node)}
-#studio-display-math(
+${tracedBody(node, context, `#studio-display-math(
   [#studio-fit-math(source-line: ${node.sourceLine}${wrapped})[$ ${math} $]],
   emphasis: ${emphasis ? "true" : "false"},
-)`;
+)`)}`;
   }
   if (node.type === "List") {
     const renderer = node.ordered ? "enum" : "list";
-    const items = node.items.map((item) => `[${renderInlines(item)}]`).join(",\n  ");
+    const items = node.items.map((item, index) => `[${index === 0 ? trace(node, context, "start") : ""}${renderInlines(item)}${index === node.items.length - 1 ? trace(node, context, "end") : ""}]`).join(",\n  ");
     return `${marker(node)}\n#${renderer}(tight: false,\n  ${items}\n)`;
   }
-  if (node.type === "Table") return renderTable(node);
+  if (node.type === "Table") return renderTable(node, context);
   if (["Problem", "Answer", "Explanation", "Point", "Example", "Warning"].includes(node.type)) {
     return renderBox(node as Extract<TypstBlockNode, { type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning" }>,context);
   }
   if (node.type === "Figure") {
     const definition=extensionRegistry.get(node.figureType,"figure");
-    if(context.resourceFallbacks?.[node.id])return `${marker(node)}\n#block(breakable:true)[#strong[#text(${typstString(context.resourceFallbacks[node.id])})]\n#raw(${typstString(node.raw)},block:true)]`;
+    if (context.resourceFallbacks?.[node.id]) {
+      const fallback = `#strong[#text(${typstString(context.resourceFallbacks[node.id])})]\n#raw(${typstString(node.raw)},block:true)`;
+      return `${marker(node)}\n#block(breakable:true)[${tracedBody(node, context, fallback)}]`;
+    }
     const caption = node.caption.length ? `[${renderInlines(node.caption)}]` : "none";
-    if(definition?.renderPdf){const parsed=extensionRegistry.parse(node.figureType,node.raw,node.sourceLine);const width=Math.min(Number(parsed.config.width??94),Number(parsed.config.maxWidth??100));const body=definition.renderPdf(parsed.config,{sourceLine:node.sourceLine,outputMode:context.outputMode??"complete",references:context.references,assets:context.assets,assetPaths:context.assetPaths,assetPath:node.assetPath,text:value=>`#text(${typstString(value)})`,inline:value=>renderInlines(parseTypstInline(value,node.sourceLine))});return `${marker(node)}\n#studio-figure([${body}],width:${width}%,caption:${caption})`;}
-    const width = node.figureType === "triangle" || node.figureType === "circle"
-      ? "72%"
-      : node.figureType === "number-line" || node.figureType === "sign-chart"
-        ? "84%"
-        : node.figureType === "mermaid"
-          ? "100%"
-          : "94%";
+    const scale = (node.figureScale ?? 100) / 100;
+    let body: string;
+    let width: number;
+    if (definition?.renderPdf) {
+      const parsed = extensionRegistry.parse(node.figureType, node.raw, node.sourceLine);
+      width = Math.min(Number(parsed.config.width ?? 94), Number(parsed.config.maxWidth ?? 100));
+      body = definition.renderPdf(parsed.config, { sourceLine: node.sourceLine, outputMode: context.outputMode ?? "complete",
+        references: context.references, assets: context.assets, assetPaths: context.assetPaths, assetPath: node.assetPath,
+        text: value => `#text(${typstString(value)})`, inline: value => renderInlines(parseTypstInline(value, node.sourceLine)) });
+    } else {
+      width = node.figureType === "triangle" || node.figureType === "circle" ? 72
+        : node.figureType === "number-line" || node.figureType === "sign-chart" ? 84
+        : node.figureType === "mermaid" ? 100 : 94;
+      body = `#image(${typstString(node.assetPath)}, width: 100%)`;
+    }
+    const figure = `#studio-figure([${tracedBody(node, context, body)}], width: ${Number((width * scale).toFixed(2))}%, caption: ${caption})`;
     return `${marker(node)}
-#studio-figure(
-  image(${typstString(node.assetPath)}, width: 100%),
-  width: ${width},
-  caption: ${caption},
-)`;
+${figure}`;
   }
-  if (node.type === "PageBreak") return `${marker(node)}\n#pagebreak()`;
+  if (node.type === "PageBreak") return `${marker(node)}\n#pagebreak(${node.weak ? "weak: true" : ""})`;
   if (node.type === "Code") {
-    return `${marker(node)}\n#raw(${typstString(node.value)}, block: true, lang: ${typstString(node.language || "text")})`;
+    return `${marker(node)}\n${tracedBody(node, context, `#raw(${typstString(node.value)}, block: true, lang: ${typstString(node.language || "text")})`)}`;
   }
   return `${marker(node)}\n#line(length: 100%, stroke: 0.6pt + muted-color)`;
 }
@@ -422,11 +452,28 @@ export function generateTypstProject(request: TypstCompileRequest): GeneratedTyp
   const warnings:TypstGenerationWarning[]=resources.map(issue=>({code:issue.code,message:issue.message,sourceLine:issue.sourceLine,nodeType:"Figure"}));
   const references=inspectExtensionDocument(entries.filter(entry=>!resourceFallbacks[entry.id])).anchors;
   const context:RenderContext={annotationAccent:typstThemeAnnotationAccent(request.theme),references,assets:materialAssets,assetPaths,resourceFallbacks,outputMode:request.outputMode};
+  context.inspectLayout = request.inspectLayout;
+  const pageHeight = Math.max(1, 297 - request.settings.marginTop - request.settings.marginBottom).toFixed(2);
+  const visualHelpers = `
+#let studio-trace(id, line, kind, edge) = context {
+  let p = here().position()
+  metadata((layoutId: id, line: line, kind: kind, edge: edge, page: p.page, x: p.x.pt(), y: p.y.pt()))
+}
+#let studio-keep(line, make-box) = layout(size => context {
+  let fixed = make-box(false)
+  if measure(fixed, width: size.width).height <= ${pageHeight}mm { fixed }
+  else {
+    ${request.inspectLayout ? 'metadata((keepOverflow: line, page: here().page()))' : ""}
+    make-box(true)
+  }
+})
+`;
   const body = renderDocumentBody(ast.children, isPrepSchoolTheme(request.theme),context);
   const source = [
     documentVariables(ast),
     renderTypstTheme(request.theme, request.settings),
     COMMON_LAYOUT_HELPERS,
+    visualHelpers,
     request.settings.includeCover ? cover() : "",
     body,
     "",

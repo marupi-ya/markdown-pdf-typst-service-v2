@@ -336,6 +336,7 @@ function blockToTypstNode(block: StudioBlock, outputMode: "complete"|"questions"
       type: "Figure",
       sourceLine: block.startLine,
       figureType: block.figureType ?? "unknown",
+      figureScale: block.figureScale,
       raw: block.raw ?? "",
       params: { ...(block.params ?? {}) },
       caption: parseTypstInline(block.params?.caption ?? "", block.startLine),
@@ -347,6 +348,7 @@ function blockToTypstNode(block: StudioBlock, outputMode: "complete"|"questions"
     return {
       id: block.id,
       type: "PageBreak",
+      weak: block.attributes?.["studio-visual"] === "true",
       sourceLine: block.startLine,
       policy: defaultPolicy({ keepTogether: true, allowBreak: false }),
     };
@@ -409,6 +411,7 @@ function blockToTypstNode(block: StudioBlock, outputMode: "complete"|"questions"
     id: block.id,
     type,
     variant,
+    requestedKeep: (type === "Problem" || type === "Example") && block.attributes?.["keep-together"] === "true",
     semantic: { exerciseId: block.attributes?.id, solutionFor: block.attributes?.for },
     sourceLine: block.startLine,
     title: parseTypstInline(defaultCalloutTitle(block, type), block.startLine),

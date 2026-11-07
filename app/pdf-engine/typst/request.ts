@@ -70,6 +70,10 @@ export function validateTypstCompileRequest(value: unknown): TypstCompileRequest
   if (!request.theme || !THEMES.has(request.theme)) throw new TypstRequestError("Typstテーマが正しくありません。");
   if (!isStudioSettings(request.settings)) throw new TypstRequestError("教材レイアウト設定が正しくありません。");
 
+  if (request.inspectLayout !== undefined && typeof request.inspectLayout !== "boolean") {
+    throw new TypstRequestError("PDFの位置情報設定が正しくありません。");
+  }
+
   const assets = request.mermaidAssets ?? {};
   const entries = Object.entries(assets);
   if (entries.length > MAX_MERMAID_ASSETS) throw new TypstRequestError("Mermaid図が80件の上限を超えています。");

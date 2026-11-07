@@ -63,18 +63,20 @@ export type TypstBlockNode =
   | (TypstNodeBase & {
       type: "Problem" | "Answer" | "Explanation" | "Point" | "Example" | "Warning";
       variant: TypstBoxVariant;
+      requestedKeep?: boolean;
       title: TypstInlineNode[];
       children: TypstBlockNode[];
     })
   | (TypstNodeBase & {
       type: "Figure";
       figureType: string;
+      figureScale?: number;
       raw: string;
       params: Record<string, string>;
       caption: TypstInlineNode[];
       assetPath: string;
     })
-  | (TypstNodeBase & { type: "PageBreak" })
+  | (TypstNodeBase & { type: "PageBreak"; weak?: boolean })
   | (TypstNodeBase & { type: "Code"; language: string; value: string })
   | (TypstNodeBase & { type: "Divider" });
 
@@ -90,6 +92,7 @@ export type TypstCompileRequest = {
   includeQuestionInAnswer: boolean;
   settings: StudioSettings;
   theme: TypstThemeId;
+  inspectLayout?: boolean;
   mermaidAssets?: Record<string, string>;
   materialAssets?:Record<string,MaterialAsset>;
 };

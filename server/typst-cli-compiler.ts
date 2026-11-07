@@ -1,3 +1,4 @@
+import { readLayoutInspection } from "../app/pdf-engine/typst/layout-inspection";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -251,18 +252,29 @@ export async function compileWithTypstCli(input: unknown, options: { inspectSema
       throw new TypstCompilerError({ stage: "validation", code: "INVALID_PDF", message: "Typstの出力が有効なPDFではありません。" });
     }
     const textValidation = await optionalTextValidation(pdfPath, project);
-    // This extra CLI pass is opt-in for regression runs; normal production
-    // compilation retains its existing cost and response shape.
-    const semanticLocations = options.inspectSemantics
-      ? JSON.parse((await run(status.binary, ["query", ...args.slice(1, -2).filter((arg, i, all) => arg !== "--diagnostic-format" && all[i - 1] !== "--diagnostic-format"), sourcePath, "metadata", "--field", "value"])).stdout) as Array<Record<string, unknown>>
-      : undefined;
+    const pageCount = approximatePageCount(pdf);
+    let semanticLocations: Array<Record<string, unknown>> | undefined;
+    let layoutInspection;
+    if (options.inspectSemantics || request.inspectLayout) {
+      const query = async () => JSON.parse((await run(status.binary, [
+        "query", ...args.slice(1, -2).filter((arg, i, all) =>
+          arg !== "--diagnostic-format" && all[i - 1] !== "--diagnostic-format"),
+        sourcePath, "metadata", "--field", "value",
+      ], request.inspectLayout ? 9_000 : COMPILE_TIMEOUT_MS)).stdout) as Array<Record<string, unknown>>;
+      // A timeout in the optional position scan must not discard a valid PDF.
+      semanticLocations = options.inspectSemantics ? await query() : await query().catch(() => undefined);
+      if (request.inspectLayout && semanticLocations) {
+        layoutInspection = readLayoutInspection(semanticLocations, pageCount);
+      }
+    }
     return {
       pdf,
-      pageCount: approximatePageCount(pdf),
+      pageCount,
       typstVersion: status.version,
       textValidation,
       source: project.source,
       semanticLocations,
+      layoutInspection,
       warnings:project.warnings,
     };
   } finally {

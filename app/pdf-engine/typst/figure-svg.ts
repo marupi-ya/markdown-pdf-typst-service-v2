@@ -287,16 +287,17 @@ function circle(node: FigureNode) {
 function histogram(node: FigureNode) {
   const result = parseHistogramConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { boundaries, frequencies, yMax, xLabel, yLabel } = result.config;
+  const { boundaries, frequencies, yMax, yTick, xLabel, yLabel, showValues } = result.config;
   const left = 62;
   const right = 610;
   const top = 28;
   const bottom = 295;
   const sx = (value: number) => left + (value - boundaries[0]) / (boundaries.at(-1)! - boundaries[0]) * (right - left);
   const sy = (value: number) => bottom - value / yMax * (bottom - top);
-  const bars = frequencies.map((value, index) => `<rect x="${sx(boundaries[index])}" y="${sy(value)}" width="${sx(boundaries[index + 1]) - sx(boundaries[index])}" height="${bottom - sy(value)}" fill="#b9d8ee" stroke="#1769aa"/><text text-anchor="middle" x="${(sx(boundaries[index]) + sx(boundaries[index + 1])) / 2}" y="${sy(value) - 6}">${xml(value)}</text>`).join("");
+  const bars = frequencies.map((value, index) => `<rect x="${sx(boundaries[index])}" y="${sy(value)}" width="${sx(boundaries[index + 1]) - sx(boundaries[index])}" height="${bottom - sy(value)}" fill="#b9d8ee" stroke="#1769aa"/>${showValues ? `<text text-anchor="middle" x="${(sx(boundaries[index]) + sx(boundaries[index + 1])) / 2}" y="${sy(value) - 6}">${xml(value)}</text>` : ""}`).join("");
+  const yTicks = finiteTicks(0, yMax, yTick, 25).map(value => `<line class="grid" x1="${left}" x2="${right}" y1="${sy(value)}" y2="${sy(value)}"/><text text-anchor="end" x="${left-9}" y="${sy(value)+4}">${xml(value)}</text>`).join("");
   const ticks = boundaries.map((value) => `<text text-anchor="middle" x="${sx(value)}" y="${bottom + 18}">${xml(value)}</text>`).join("");
-  return svgFrame(`<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/><line class="axis" x1="${left}" y1="${top}" x2="${left}" y2="${bottom}"/>${bars}${ticks}<text text-anchor="middle" x="${(left + right) / 2}" y="330">${xml(xLabel)}</text><text x="12" y="24">${xml(yLabel)}</text>`, 640, 345, node.params.caption ?? "ヒストグラム");
+  return svgFrame(`<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/><line class="axis" x1="${left}" y1="${top}" x2="${left}" y2="${bottom}"/>${yTicks}${bars}${ticks}<text text-anchor="middle" x="${(left + right) / 2}" y="330">${xml(xLabel)}</text><text x="12" y="24">${xml(yLabel)}</text>`, 640, 345, node.params.caption ?? "ヒストグラム");
 }
 
 function boxPlot(node: FigureNode) {
@@ -385,7 +386,7 @@ function venn(node: FigureNode) {
   const positions = sets.length === 2
     ? [{ x: 230, y: 145 }, { x: 350, y: 145 }]
     : [{ x: 240, y: 130 }, { x: 350, y: 130 }, { x: 295, y: 205 }];
-  const circles = sets.map((set, index) => `<circle cx="${positions[index].x}" cy="${positions[index].y}" r="92" fill="${COLORS[index]}22" stroke="${COLORS[index]}" stroke-width="2"/><text text-anchor="middle" x="${positions[index].x}" y="${positions[index].y - 100}">${xml(set.label)}</text>`).join("");
+  const circles = sets.map((set, index) => `<circle cx="${positions[index].x}" cy="${positions[index].y}" r="92" fill="${COLORS[index]}22" stroke="${COLORS[index]}" stroke-width="2"/><text text-anchor="middle" x="${positions[index].x}" y="${sets.length === 3 && index === 2 ? positions[index].y + 110 : positions[index].y - 100}">${xml(set.label)}</text>`).join("");
   const [a, b, c] = sets.map((set) => set.id);
   const regionPositions: Record<string, { x: number; y: number }> = sets.length === 2
     ? { [`${a}-only`]: { x: 170, y: 150 }, [`${b}-only`]: { x: 410, y: 150 }, [`${a}&${b}`]: { x: 290, y: 150 }, outside: { x: 88, y: 285 } }
@@ -394,7 +395,7 @@ function venn(node: FigureNode) {
     const position = regionPositions[region.key] ?? positions[sets.findIndex((set) => set.id === region.key)];
     return position ? `<text text-anchor="middle" x="${position.x}" y="${position.y}">${xml(region.label)}</text>` : "";
   }).join("");
-  return svgFrame(`${showUniverse ? `<rect x="55" y="28" width="530" height="285" fill="none" stroke="#41576a"/><text x="65" y="48">${xml(universe)}</text>` : ""}${circles}${regionLabels}`, 640, 340, node.params.caption ?? "ベン図");
+  return svgFrame(`${showUniverse ? `<rect x="55" y="8" width="530" height="325" fill="none" stroke="#41576a"/><text x="65" y="48">${xml(universe)}</text>` : ""}${circles}${regionLabels}`, 640, 360, node.params.caption ?? "ベン図");
 }
 
 function simpleTree(node: FigureNode) {

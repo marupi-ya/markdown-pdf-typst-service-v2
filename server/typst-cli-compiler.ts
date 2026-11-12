@@ -17,7 +17,7 @@ import type {
 } from "../app/pdf-engine/typst/types";
 
 const execFileAsync = promisify(execFile);
-const COMPILE_TIMEOUT_MS = 45_000;
+const COMPILE_TIMEOUT_MS = 32_000;
 const MAX_DIAGNOSTIC_BYTES = 1_000_000;
 
 export class TypstCompilerError extends Error {
@@ -61,7 +61,7 @@ async function resolveTypstBinary() {
 
   try {
     await execFileAsync("typst", ["--version"], {
-      timeout: 5_000,
+      timeout: 2_000,
       maxBuffer: 100_000,
       encoding: "utf8",
       windowsHide: true,
@@ -96,7 +96,8 @@ async function run(command: string, args: string[], timeout = COMPILE_TIMEOUT_MS
     });
   } catch (error) {
     const value = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; killed?: boolean };
-    if (value.code === "ENOENT") {
+    if(value.killed)throw new TypstCompilerError({stage:"compiler",code:"TYPST_COMPILE_TIMEOUT",message:"処理時間の上限に達しました。時間をおいて再試行してください。"});
+    if (value.code === "ENOENT" && command !== "pdftotext") {
       throw new TypstCompilerError({
         stage: "compiler",
         code: "TYPST_BINARY_NOT_FOUND",
@@ -110,7 +111,7 @@ async function run(command: string, args: string[], timeout = COMPILE_TIMEOUT_MS
 export async function getTypstCompilerStatus() {
   const binary = await resolveTypstBinary();
   try {
-    const result = await run(binary, ["--version"], 8_000);
+    const result = await run(binary, ["--version"], 3_000);
     return { available: true, binary, version: result.stdout.trim() || result.stderr.trim() };
   } catch (error) {
     if (error instanceof TypstCompilerError) throw error;
@@ -120,6 +121,13 @@ export async function getTypstCompilerStatus() {
       message: `Typst CLIを起動できません: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
+}
+
+let compilerStatusCache: {at:number;value:Awaited<ReturnType<typeof getTypstCompilerStatus>>}|undefined;
+let compilerStatusPending:Promise<Awaited<ReturnType<typeof getTypstCompilerStatus>>>|undefined;
+export async function getCachedCompilerStatus(){
+  if(compilerStatusCache&&Date.now()-compilerStatusCache.at<60000)return compilerStatusCache.value;
+  return compilerStatusPending??(compilerStatusPending=getTypstCompilerStatus().then(value=>{compilerStatusCache={value,at:Date.now()};return value;}).finally(()=>{compilerStatusPending=undefined;}));
 }
 
 function safeAssetTarget(root: string, assetPath: string) {
@@ -180,7 +188,7 @@ function approximatePageCount(pdf: Buffer) {
 
 async function optionalTextValidation(pdfPath: string, project: GeneratedTypstProject) {
   try {
-    const result = await run("pdftotext", ["-enc", "UTF-8", pdfPath, "-"], 12_000);
+    const result = await run("pdftotext", ["-enc", "UTF-8", pdfPath, "-"], 5_000);
     const extracted = result.stdout.replace(/\s+/gu, "");
     if (!extracted) {
       throw new TypstCompilerError({ stage: "validation", code: "PDF_TEXT_MISSING", message: "生成PDFから文字を抽出できませんでした。" });
@@ -218,7 +226,7 @@ export async function compileWithTypstCli(input: unknown, options: { inspectSema
     throw new TypstCompilerError(typstErrorPayload(error));
   }
 
-  const status = await getTypstCompilerStatus();
+  const status = await getCachedCompilerStatus();
   const root = await mkdtemp(join(tmpdir(), "markdown-studio-typst-"));
   const sourcePath = join(root, "main.typ");
   const pdfPath = join(root, "output.pdf");
@@ -260,7 +268,7 @@ export async function compileWithTypstCli(input: unknown, options: { inspectSema
         "query", ...args.slice(1, -2).filter((arg, i, all) =>
           arg !== "--diagnostic-format" && all[i - 1] !== "--diagnostic-format"),
         sourcePath, "metadata", "--field", "value",
-      ], request.inspectLayout ? 9_000 : COMPILE_TIMEOUT_MS)).stdout) as Array<Record<string, unknown>>;
+      ], request.inspectLayout ? 7_000 : COMPILE_TIMEOUT_MS)).stdout) as Array<Record<string, unknown>>;
       // A timeout in the optional position scan must not discard a valid PDF.
       semanticLocations = options.inspectSemantics ? await query() : await query().catch(() => undefined);
       if (request.inspectLayout && semanticLocations) {
@@ -275,7 +283,7 @@ export async function compileWithTypstCli(input: unknown, options: { inspectSema
       source: project.source,
       semanticLocations,
       layoutInspection,
-      warnings:project.warnings,
+      warnings:[...project.warnings,...diagnostics.split("\n").filter(line=>/warning:.*(?:font|fallback)/iu.test(line)).slice(0,20).map(line=>({code:"COMPILER_FONT_WARNING",message:line.replace(/.*warning:\s*/iu,"警告: ").slice(0,300),sourceLine:project.ast.children[0]?.sourceLine??1,nodeType:"Document"}))],
     };
   } finally {
     await rm(root, { recursive: true, force: true });

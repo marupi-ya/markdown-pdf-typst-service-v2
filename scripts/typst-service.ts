@@ -1,10 +1,13 @@
+import runtimeContract from "../app/production/runtime-manifest.json";
+import {readFileSync} from "node:fs";
+import {FIGURE_TYPES} from "../app/studio-core";
 import { MAX_LAYOUT_BYTES, PDF_LAYOUT_CONTENT_TYPE } from "../app/pdf-engine/typst/layout-inspection";
 import { MATH_C_TYPES } from "../app/math-c/syntax";
 import { extensionRegistry } from "../app/extensions";
 import { TYPST_MAX_REQUEST_BYTES } from "../app/material-assets";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
-import { compileWithTypstCli, getTypstCompilerStatus, TypstCompilerError } from "../server/typst-cli-compiler";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { compileWithTypstCli, getCachedCompilerStatus, TypstCompilerError } from "../server/typst-cli-compiler";
 import { typstErrorPayload } from "../app/pdf-engine/typst/errors";
 import { TYPST_THEME_LABELS } from "../app/pdf-engine/typst/theme";
 
@@ -14,6 +17,10 @@ const port = Number(process.env.PORT ?? 8789);
 const host = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const token = process.env.TYPST_SERVICE_TOKEN ?? "";
 const MAX_BODY_BYTES = TYPST_MAX_REQUEST_BYTES;
+let activeCompiles=0;
+const MAX_CONCURRENT_COMPILES=1;
+// Advertise the renderer actually loaded by this service, not a stale manifest.
+const runtime={...runtimeContract,rendererFingerprint:createHash("sha256").update(readFileSync(new URL("../app/pdf-engine/typst/figure-svg.ts",import.meta.url))).digest("hex")};
 
 function json(response: ServerResponse, status: number, value: unknown) {
   response.writeHead(status, {
@@ -56,8 +63,8 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "GET" && request.url === "/health") {
     try {
-      const status = await getTypstCompilerStatus();
-      json(response, 200, { ...status, supportedThemes: Object.keys(TYPST_THEME_LABELS), supportedFigures: [...MATH_C_TYPES,...extensionRegistry.list().filter(item=>item.kind==="figure").map(item=>item.type)], supportedExtensions: Object.fromEntries(extensionRegistry.list().map(item=>[item.type,item.version])) });
+      const status = await getCachedCompilerStatus();
+      json(response, 200, { available:status.available,version:status.version,runtime,release:process.env.RENDER_GIT_COMMIT??"local",activeCompiles,supportedThemes: Object.keys(TYPST_THEME_LABELS), supportedFigures: [...FIGURE_TYPES,...MATH_C_TYPES,...extensionRegistry.list().filter(item=>item.kind==="figure").map(item=>item.type)], supportedExtensions: Object.fromEntries(extensionRegistry.list().map(item=>[item.type,item.version])) });
     } catch (error) {
       const payload = error instanceof TypstCompilerError ? error.payload : typstErrorPayload(error, "compiler");
       json(response, 503, { available: false, ...payload });
@@ -66,6 +73,8 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/compile") {
+    if(activeCompiles>=MAX_CONCURRENT_COMPILES){response.setHeader("retry-after","20");json(response,503,{stage:"compiler",code:"COMPILER_BUSY",message:"PDFを生成中です。20秒後に再試行してください。"});return;}
+    activeCompiles++;
     try {
       const input = await readJson(request);
       const result = await compileWithTypstCli(input);
@@ -82,6 +91,7 @@ const server = createServer(async (request, response) => {
         "content-disposition": "inline; filename=material.pdf",
         "x-content-type-options": "nosniff",
         "x-typst-version": result.typstVersion,
+        "x-studio-capability-fingerprint": runtime.rendererFingerprint,
         "x-pdf-pages": String(result.pageCount),
         "x-text-validation": result.textValidation.performed ? `${result.textValidation.matchedSamples}/${result.textValidation.checkedSamples}` : "unavailable",
         "x-studio-warnings": encodeURIComponent(JSON.stringify(result.warnings.slice(0,6).map(warning=>({...warning,message:warning.message.slice(0,110)})))),
@@ -90,9 +100,10 @@ const server = createServer(async (request, response) => {
       response.end(result.pdf);
     } catch (error) {
       const payload = error instanceof TypstCompilerError ? error.payload : typstErrorPayload(error, "compiler");
-      const status = payload.code === "REQUEST_TOO_LARGE" ? 413 : payload.stage === "request" ? 400 : 422;
+      const status = payload.code === "TYPST_COMPILE_TIMEOUT" ? 504 : payload.code === "REQUEST_TOO_LARGE" ? 413 : payload.stage === "request" ? 400 : 422;
+      if(status===504)response.setHeader("retry-after","30");
       json(response, status, payload);
-    }
+    } finally {activeCompiles--;}
     return;
   }
 

@@ -11,6 +11,7 @@ import {
   parseProbabilityDistributionConfig,
   parseScatterPlotConfig,
   parseSignChartConfig,
+  parseTreeDiagramConfig,
   parseTriangleConfig,
   parseVennDiagramConfig,
 } from "../../studio-core";
@@ -55,12 +56,12 @@ function finiteTicks(min: number, max: number, step: number, limit = 30) {
 function functionGraph(node: FigureNode) {
   const result = parseFunctionGraphConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { xRange, yRange, axisScale, xTick, yTick, showGrid, series, points, guides } = result.config;
+  const { xRange, yRange, axisScale, xTick, yTick, showGrid, showLegend, series, points, guides } = result.config;
   const { left, right, top, bottom } = functionGraphPlotBounds(
     xRange,
     yRange,
     axisScale,
-    { left: 54, right: 615, top: 30, bottom: 312 },
+    { left: 54, right: 615, top: showLegend ? 60 : 30, bottom: 312 },
   );
   const sx = (value: number) => left + (value - xRange[0]) / (xRange[1] - xRange[0]) * (right - left);
   const sy = (value: number) => bottom - (value - yRange[0]) / (yRange[1] - yRange[0]) * (bottom - top);
@@ -129,7 +130,13 @@ function functionGraph(node: FigureNode) {
   const axes = `<rect x="${left}" y="${top}" width="${right - left}" height="${bottom - top}" fill="none" stroke="#657786"/>
     ${yRange[0] <= 0 && yRange[1] >= 0 ? `<line class="axis" x1="${left}" y1="${sy(0)}" x2="${right}" y2="${sy(0)}"/>` : ""}
     ${xRange[0] <= 0 && xRange[1] >= 0 ? `<line class="axis" x1="${sx(0)}" y1="${top}" x2="${sx(0)}" y2="${bottom}"/>` : ""}`;
-  return svgFrame(`${grid}${axes}${guideLines}${curves}${pointMarks}${tickLabels}`, 640, 350, node.params.caption ?? "関数グラフ");
+  const legend = showLegend ? `<g class="graph-legend">${series.map((item, index) => {
+    const x = 54 + (index % 3) * 188;
+    const y = 18 + Math.floor(index / 3) * 20;
+    const dash = item.style === "dashed" ? "8 5" : item.style === "dotted" ? "2 5" : "none";
+    return `<line x1="${x}" y1="${y}" x2="${x + 28}" y2="${y}" stroke="${COLORS[index % COLORS.length]}" stroke-width="2.4" stroke-dasharray="${dash}"/><text x="${x + 35}" y="${y + 4}">${xml(item.label)}</text>`;
+  }).join("")}</g>` : "";
+  return svgFrame(`${legend}${grid}${axes}${guideLines}${curves}${pointMarks}${tickLabels}`, 640, 350, node.params.caption ?? "関数グラフ");
 }
 
 function dataChart(node: FigureNode) {
@@ -295,42 +302,58 @@ function histogram(node: FigureNode) {
 function boxPlot(node: FigureNode) {
   const result = parseBoxPlotConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { series, range } = result.config;
+  const { series, range, tickStep, axisLabel } = result.config;
   const left = 82;
   const right = 600;
   const sx = (value: number) => left + (value - range[0]) / (range[1] - range[0]) * (right - left);
+  const axisY = 55 + series.length * 62;
+  const ticks = finiteTicks(range[0], range[1], tickStep, 13);
+  const grid = `<g class="box-plot-grid">${ticks.map((value) => `<line class="grid" x1="${sx(value)}" y1="25" x2="${sx(value)}" y2="${axisY}"/>`).join("")}</g>`;
   const marks = series.map((item, index) => {
     const y = 55 + index * 62;
     const [min, q1, median, q3, max] = item.fiveNumber;
     return `<text text-anchor="end" x="${left - 10}" y="${y + 5}">${xml(item.label)}</text><line x1="${sx(min)}" y1="${y}" x2="${sx(max)}" y2="${y}" stroke="#173a67"/><line x1="${sx(min)}" y1="${y - 10}" x2="${sx(min)}" y2="${y + 10}" stroke="#173a67"/><line x1="${sx(max)}" y1="${y - 10}" x2="${sx(max)}" y2="${y + 10}" stroke="#173a67"/><rect x="${sx(q1)}" y="${y - 17}" width="${sx(q3) - sx(q1)}" height="34" fill="#dcecf8" stroke="#1769aa"/><line x1="${sx(median)}" y1="${y - 17}" x2="${sx(median)}" y2="${y + 17}" stroke="#9c1133" stroke-width="2"/>${item.outliers.map((value) => `<circle cx="${sx(value)}" cy="${y}" r="3" fill="#d8560a"/>`).join("")}`;
   }).join("");
-  return svgFrame(marks, 640, Math.max(140, 90 + series.length * 62), node.params.caption ?? "箱ひげ図");
+  const axis = `<line class="axis" x1="${left}" y1="${axisY}" x2="${right}" y2="${axisY}"/>${ticks.map((value) => `<line class="axis" x1="${sx(value)}" y1="${axisY}" x2="${sx(value)}" y2="${axisY + 5}"/><text text-anchor="middle" x="${sx(value)}" y="${axisY + 19}">${xml(value)}</text>`).join("")}<text text-anchor="middle" x="${(left + right) / 2}" y="${axisY + 40}">${xml(axisLabel)}</text>`;
+  return svgFrame(`${grid}${marks}${axis}`, 640, axisY + 52, node.params.caption ?? "箱ひげ図");
 }
 
 function scatter(node: FigureNode) {
   const result = parseScatterPlotConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { points, xRange, yRange, trend } = result.config;
-  const left = 60;
+  const { points, xRange, yRange, xTick, yTick, xLabel, yLabel, showGrid, trend } = result.config;
+  const left = 70;
   const right = 610;
-  const top = 28;
-  const bottom = 305;
+  const top = 35;
+  const bottom = 280;
   const sx = (value: number) => left + (value - xRange[0]) / (xRange[1] - xRange[0]) * (right - left);
   const sy = (value: number) => bottom - (value - yRange[0]) / (yRange[1] - yRange[0]) * (bottom - top);
+  const xTicks = finiteTicks(xRange[0], xRange[1], xTick, 13);
+  const yTicks = finiteTicks(yRange[0], yRange[1], yTick, 13);
+  const grid = showGrid ? `<g class="scatter-grid">${xTicks.map((value) => `<line class="grid" x1="${sx(value)}" y1="${top}" x2="${sx(value)}" y2="${bottom}"/>`).join("")}${yTicks.map((value) => `<line class="grid" x1="${left}" y1="${sy(value)}" x2="${right}" y2="${sy(value)}"/>`).join("")}</g>` : "";
   const marks = points.map((point) => `<circle cx="${sx(point.x)}" cy="${sy(point.y)}" r="4" fill="#1769aa"/>${point.label ? `<text x="${sx(point.x) + 6}" y="${sy(point.y) - 6}">${xml(point.label)}</text>` : ""}`).join("");
   const trendLine = trend ? `<line x1="${sx(xRange[0])}" y1="${sy(trend.slope * xRange[0] + trend.intercept)}" x2="${sx(xRange[1])}" y2="${sy(trend.slope * xRange[1] + trend.intercept)}" stroke="#d8560a" stroke-width="2" stroke-dasharray="7 5"/>` : "";
-  return svgFrame(`<rect x="${left}" y="${top}" width="${right - left}" height="${bottom - top}" fill="none" stroke="#657786"/>${trendLine}${marks}`, 640, 335, node.params.caption ?? "散布図");
+  const axes = `<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/><line class="axis" x1="${left}" y1="${top}" x2="${left}" y2="${bottom}"/>${xTicks.map((value) => `<line class="axis" x1="${sx(value)}" y1="${bottom}" x2="${sx(value)}" y2="${bottom + 5}"/><text text-anchor="middle" x="${sx(value)}" y="${bottom + 19}">${xml(value)}</text>`).join("")}${yTicks.map((value) => `<line class="axis" x1="${left - 5}" y1="${sy(value)}" x2="${left}" y2="${sy(value)}"/><text text-anchor="end" x="${left - 9}" y="${sy(value) + 4}">${xml(value)}</text>`).join("")}`;
+  const labels = `${trend ? `<text text-anchor="end" x="${right}" y="${top + 13}">${xml(trend.label)}</text>` : ""}<text text-anchor="middle" x="${(left + right) / 2}" y="345">${xml(xLabel)}</text><text text-anchor="middle" transform="rotate(-90 17 ${(top + bottom) / 2})" x="17" y="${(top + bottom) / 2}">${xml(yLabel)}</text>`;
+  return svgFrame(`${grid}${axes}${trendLine}${marks}${labels}`, 640, 360, node.params.caption ?? "散布図");
 }
 
 function probability(node: FigureNode) {
   const result = parseProbabilityDistributionConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { distribution, n, p, mean, standardDeviation, xRange, shade } = result.config;
+  const { distribution, n, p, mean, standardDeviation, xRange, xTick, xLabel, shade, showParameters } = result.config;
   const left = 55;
   const right = 610;
-  const top = 32;
-  const bottom = 300;
+  const top = 45;
+  const bottom = 290;
   const sx = (value: number) => left + (value - xRange[0]) / (xRange[1] - xRange[0]) * (right - left);
+  const ticks = finiteTicks(xRange[0], xRange[1], xTick, 13);
+  const grid = `<g class="probability-grid">${ticks.map((value) => `<line class="grid" x1="${sx(value)}" y1="${top}" x2="${sx(value)}" y2="${bottom}"/>`).join("")}</g>`;
+  const axes = `<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/><line class="axis" x1="${left}" y1="${top}" x2="${left}" y2="${bottom}"/>${ticks.map((value) => `<line class="axis" x1="${sx(value)}" y1="${bottom}" x2="${sx(value)}" y2="${bottom + 5}"/><text text-anchor="middle" x="${sx(value)}" y="${bottom + 19}">${xml(value)}</text>`).join("")}<text text-anchor="middle" x="${(left + right) / 2}" y="345">${xml(xLabel)}</text>`;
+  const parameterText = distribution === "binomial"
+    ? `二項分布  n=${n}, p=${p}　μ=${Number(mean.toPrecision(10))}　σ=${Number(standardDeviation.toPrecision(10))}`
+    : `正規分布  μ=${Number(mean.toPrecision(10))}　σ=${Number(standardDeviation.toPrecision(10))}`;
+  const parameters = showParameters ? `<text class="probability-parameter-label" x="${left}" y="20">${xml(parameterText)}</text>` : "";
   const isShaded = (value: number) => !shade ? false
     : shade.kind === "left" ? value <= (shade.upper ?? -Infinity)
     : shade.kind === "right" ? value >= (shade.lower ?? Infinity)
@@ -340,7 +363,7 @@ function probability(node: FigureNode) {
     const values = Array.from({ length: (n ?? 0) + 1 }, (_, k) => factorial(n ?? 0) / (factorial(k) * factorial((n ?? 0) - k)) * (p ?? 0) ** k * (1 - (p ?? 0)) ** ((n ?? 0) - k));
     const max = Math.max(...values, 1e-6);
     const bars = values.map((value, k) => `<rect x="${sx(k) - 7}" y="${bottom - value / max * (bottom - top)}" width="14" height="${value / max * (bottom - top)}" fill="${isShaded(k) ? "#d8560a" : "#1769aa"}"/>`).join("");
-    return svgFrame(`<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/>${bars}`, 640, 330, node.params.caption ?? "二項分布");
+    return svgFrame(`${parameters}${grid}${bars}${axes}`, 640, 360, node.params.caption ?? "二項分布");
   }
   const values = Array.from({ length: 241 }, (_, index) => xRange[0] + (xRange[1] - xRange[0]) * index / 240);
   for (const boundary of [shade?.lower, shade?.upper]) if (boundary !== undefined) values.push(boundary);
@@ -352,7 +375,7 @@ function probability(node: FigureNode) {
   const area = shaded.length > 1
     ? `<polygon points="${sx(shaded[0].x)},${bottom} ${shaded.map(({ point }) => point).join(" ")} ${sx(shaded.at(-1)!.x)},${bottom}" fill="#d8560a" fill-opacity="0.28"/>`
     : "";
-  return svgFrame(`${area}<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/><polyline class="line" stroke="#1769aa" points="${samples.map(({ point }) => point).join(" ")}"/>`, 640, 330, node.params.caption ?? "正規分布");
+  return svgFrame(`${parameters}${grid}${area}<polyline class="line" stroke="#1769aa" points="${samples.map(({ point }) => point).join(" ")}"/>${axes}`, 640, 360, node.params.caption ?? "正規分布");
 }
 
 function venn(node: FigureNode) {
@@ -375,30 +398,69 @@ function venn(node: FigureNode) {
 }
 
 function simpleTree(node: FigureNode) {
-  const rootRaw = (node.params.root ?? "root | 開始").split("|").map((item) => item.trim());
-  const rootId = rootRaw[0].split(":")[0].trim();
-  const rootLabel = rootRaw[1] || rootRaw[0].split(":")[1] || rootId;
-  const branches = (node.params.branches ?? "").split(";").map((item) => item.trim()).filter(Boolean).map((entry) => {
-    const [edge = "", label = "", probabilityText = ""] = entry.split("|").map((item) => item.trim());
-    const [from = "", to = ""] = edge.split(">").map((item) => item.trim());
-    return { from, to, label, probabilityText };
-  });
-  if (!rootId || branches.length < 2) throw new Error("rootと2本以上のbranchesを指定してください。");
-  const levels = new Map<string, number>([[rootId, 0]]);
-  for (let pass = 0; pass < 10; pass += 1) for (const branch of branches) if (levels.has(branch.from) && !levels.has(branch.to)) levels.set(branch.to, (levels.get(branch.from) ?? 0) + 1);
-  const maxLevel = Math.max(...levels.values());
-  const nodesByLevel = Array.from({ length: maxLevel + 1 }, () => [] as string[]);
-  for (const [id, level] of levels) nodesByLevel[level].push(id);
-  const coordinates = new Map<string, { x: number; y: number }>();
-  nodesByLevel.forEach((ids, level) => ids.forEach((id, index) => coordinates.set(id, { x: 70 + level * (500 / Math.max(1, maxLevel)), y: 55 + index * (250 / Math.max(1, ids.length - 1)) })));
+  const result = parseTreeDiagramConfig(node.params);
+  if (!result.ok) throw new Error(result.errors.join(" "));
+  const { root, nodes, branches, results, stages, showNodeLabels } = result.config;
+  const children = new Map<string, string[]>();
+  for (const branch of branches) children.set(branch.from, [...(children.get(branch.from) ?? []), branch.to]);
+  const depths = new Map<string, number>([[root.id, 0]]);
+  const queue = [root.id];
+  for (const id of queue) for (const child of children.get(id) ?? []) {
+    depths.set(child, (depths.get(id) ?? 0) + 1);
+    queue.push(child);
+  }
+  const maxDepth = Math.max(1, ...depths.values());
+  const leaves = nodes.filter((item) => !children.has(item.id)).map((item) => item.id);
+  const longResult = results.some((item) => item.label.length > 12);
+  const height = Math.max(230, Math.min(560, leaves.length * (longResult ? 60 : 44) + 70));
+  const top = 55;
+  const bottom = height - 30;
+  const yByNode = new Map<string, number>();
+  leaves.forEach((id, index) => yByNode.set(id, leaves.length === 1 ? (top + bottom) / 2 : top + index * (bottom - top) / (leaves.length - 1)));
+  const place = (id: string): number => {
+    const existing = yByNode.get(id);
+    if (existing !== undefined) return existing;
+    const positions = (children.get(id) ?? []).map(place);
+    const y = positions.reduce((sum, value) => sum + value, 0) / positions.length;
+    yByNode.set(id, y);
+    return y;
+  };
+  place(root.id);
+  const sx = (id: string) => 110 + (depths.get(id) ?? 0) / maxDepth * 335;
+  const wrapped = (label: string, x: number, y: number, anchor: "start" | "end", limit: number) => {
+    const chars = Array.from(label);
+    const lines = Array.from({ length: Math.ceil(chars.length / limit) }, (_, index) => chars.slice(index * limit, (index + 1) * limit).join(""));
+    return lines.map((line, index) => `<text text-anchor="${anchor}" x="${x}" y="${y + (index - (lines.length - 1) / 2) * 14}">${xml(line)}</text>`).join("");
+  };
+  const stageMarks = stages.map((stage, index) => `<text class="tree-stage-label" text-anchor="middle" x="${110 + index / maxDepth * 335}" y="21">${xml(stage)}</text>`).join("");
   const edges = branches.map((branch) => {
-    const from = coordinates.get(branch.from);
-    const to = coordinates.get(branch.to);
-    if (!from || !to) return "";
-    return `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" stroke="#657786"/><text text-anchor="middle" x="${(from.x + to.x) / 2}" y="${(from.y + to.y) / 2 - 6}">${xml([branch.label, branch.probabilityText].filter(Boolean).join(" "))}</text>`;
+    const x1 = sx(branch.from);
+    const y1 = yByNode.get(branch.from)!;
+    const x2 = sx(branch.to);
+    const y2 = yByNode.get(branch.to)!;
+    const lx = x1 + (x2 - x1) * 0.7;
+    const ly = y1 + (y2 - y1) * 0.7;
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#657786"/>${branch.label ? `<text text-anchor="middle" x="${lx}" y="${ly - (branch.probability ? 20 : 7)}">${xml(branch.label)}</text>` : ""}${branch.probability ? `<text text-anchor="middle" x="${lx}" y="${ly - 6}">${xml(branch.probability)}</text>` : ""}`;
   }).join("");
-  const labels = [...coordinates].map(([id, point]) => `<circle cx="${point.x}" cy="${point.y}" r="16" fill="#edf5fb" stroke="#1769aa"/><text text-anchor="middle" x="${point.x}" y="${point.y + 4}">${xml(id === rootId ? rootLabel : id)}</text>`).join("");
-  return svgFrame(`${edges}${labels}`, 640, 340, node.params.caption ?? "樹形図");
+  const nodeMarks = nodes.map((item) => {
+    const x = sx(item.id);
+    const y = yByNode.get(item.id)!;
+    const label = item.id === root.id || (showNodeLabels && children.has(item.id))
+      ? wrapped(item.label, x + (item.id === root.id ? -9 : 9), y - 7, item.id === root.id ? "end" : "start", item.id === root.id ? 8 : 10)
+      : "";
+    return `<circle cx="${x}" cy="${y}" r="4" fill="#1769aa"/>${label}`;
+  }).join("");
+  const resultByNode = new Map(results.map((item) => [item.node, item]));
+  const resultMarks = leaves.map((id) => {
+    const item = resultByNode.get(id);
+    const label = item?.label ?? (showNodeLabels ? nodes.find((entry) => entry.id === id)?.label : "");
+    if (!label && !item?.probability) return "";
+    const x = sx(id) + 12;
+    const y = yByNode.get(id)!;
+    const lines = label ? Math.ceil(Array.from(label).length / 12) : 0;
+    return `${label ? wrapped(label, x, y - (item?.probability ? 5 + (lines - 1) * 7 : 0), "start", 12) : ""}${item?.probability ? `<text class="tree-result-probability" x="${x}" y="${y + (label ? 10 + (lines - 1) * 7 : -3)}">${xml(item.probability)}</text>` : ""}`;
+  }).join("");
+  return svgFrame(`${stageMarks}${edges}${nodeMarks}${resultMarks}`, 640, height, node.params.caption ?? "樹形図");
 }
 
 export function sanitizeMermaidSvg(svg: string) {

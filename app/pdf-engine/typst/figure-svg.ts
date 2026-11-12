@@ -195,7 +195,7 @@ function signChart(node: FigureNode) {
 function triangle(node: FigureNode) {
   const result = parseTriangleConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { vertices, sides, angles } = result.config;
+  const { vertices, sides, angles, rightAngles } = result.config;
   const points = vertices.map((point) => `${point.x},${point.y}`).join(" ");
   const centroid = {
     x: vertices.reduce((sum, point) => sum + point.x, 0) / vertices.length,
@@ -227,13 +227,24 @@ function triangle(node: FigureNode) {
     const inward = direction(point, centroid);
     return `<text text-anchor="middle" dominant-baseline="middle" x="${(point.x + inward.x * 21).toFixed(2)}" y="${(point.y + inward.y * 21).toFixed(2)}">${xml(angle.label)}</text>`;
   }).join("");
-  return svgFrame(`<polygon points="${points}" fill="#edf5fb" stroke="#173a67" stroke-width="2"/>${labels}${sideLabels}${angleLabels}`, 440, 270, node.params.caption ?? "三角形");
+  const rightAngleMarks = rightAngles.map((vertex) => {
+    const point = byLabel.get(vertex)!;
+    const others = vertices.filter((candidate) => candidate.label !== vertex);
+    const first = direction(point, others[0]);
+    const second = direction(point, others[1]);
+    const size = 18;
+    const p1 = { x: point.x + first.x * size, y: point.y + first.y * size };
+    const p2 = { x: p1.x + second.x * size, y: p1.y + second.y * size };
+    const p3 = { x: point.x + second.x * size, y: point.y + second.y * size };
+    return `<polyline points="${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}" fill="none" stroke="#173a67" stroke-width="1.8"/>`;
+  }).join("");
+  return svgFrame(`<polygon points="${points}" fill="#edf5fb" stroke="#173a67" stroke-width="2"/>${rightAngleMarks}${labels}${sideLabels}${angleLabels}`, 440, 270, node.params.caption ?? "三角形");
 }
 
 function circle(node: FigureNode) {
   const result = parseCircleConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { center, radius, points, segments, showCenter } = result.config;
+  const { center, radius, points, segments, arcs, showCenter } = result.config;
   const cx = 220;
   const cy = 145;
   const pointMap = new Map(points.map((point) => {
@@ -251,7 +262,19 @@ function circle(node: FigureNode) {
     const value = pointMap.get(point.label)!;
     return `<circle cx="${value.x}" cy="${value.y}" r="3.5" fill="#173a67"/><text x="${value.x + 7}" y="${value.y - 7}">${xml(point.label)}</text>`;
   }).join("");
-  return svgFrame(`<circle cx="${cx}" cy="${cy}" r="${radius}" fill="#f4f9fd" stroke="#173a67" stroke-width="2"/>${lines}${marks}${showCenter ? `<circle cx="${cx}" cy="${cy}" r="3.5" fill="#173a67"/><text x="${cx + 7}" y="${cy - 7}">${xml(center)}</text>` : ""}`, 440, 290, node.params.caption ?? "円");
+  const arcMarks = arcs.map((arc) => {
+    const from = points.find((point) => point.label === arc.from)!;
+    const to = points.find((point) => point.label === arc.to)!;
+    const start = pointMap.get(arc.from)!;
+    const end = pointMap.get(arc.to)!;
+    let delta = ((to.angle - from.angle) % 360 + 360) % 360;
+    if (arc.kind === "minor" && delta > 180) delta -= 360;
+    if (arc.kind === "major" && delta <= 180) delta -= 360;
+    const radians = (from.angle + delta / 2) * Math.PI / 180;
+    const labelRadius = radius + 18;
+    return `<path d="M ${start.x} ${start.y} A ${radius} ${radius} 0 ${arc.kind === "major" ? 1 : 0} ${delta > 0 ? 0 : 1} ${end.x} ${end.y}" fill="none" stroke="#d8560a" stroke-width="3"/>${arc.label ? `<text text-anchor="middle" x="${cx + Math.cos(radians) * labelRadius}" y="${cy - Math.sin(radians) * labelRadius + 4}">${xml(arc.label)}</text>` : ""}`;
+  }).join("");
+  return svgFrame(`<circle cx="${cx}" cy="${cy}" r="${radius}" fill="#f4f9fd" stroke="#173a67" stroke-width="2"/>${arcMarks}${lines}${marks}${showCenter ? `<circle cx="${cx}" cy="${cy}" r="3.5" fill="#173a67"/><text x="${cx + 7}" y="${cy - 7}">${xml(center)}</text>` : ""}`, 440, 290, node.params.caption ?? "円");
 }
 
 function histogram(node: FigureNode) {
@@ -302,36 +325,53 @@ function scatter(node: FigureNode) {
 function probability(node: FigureNode) {
   const result = parseProbabilityDistributionConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { distribution, n, p, mean, standardDeviation, xRange } = result.config;
+  const { distribution, n, p, mean, standardDeviation, xRange, shade } = result.config;
   const left = 55;
   const right = 610;
   const top = 32;
   const bottom = 300;
   const sx = (value: number) => left + (value - xRange[0]) / (xRange[1] - xRange[0]) * (right - left);
+  const isShaded = (value: number) => !shade ? false
+    : shade.kind === "left" ? value <= (shade.upper ?? -Infinity)
+    : shade.kind === "right" ? value >= (shade.lower ?? Infinity)
+    : value >= (shade.lower ?? -Infinity) && value <= (shade.upper ?? Infinity);
   if (distribution === "binomial") {
     const factorial = (value: number) => Array.from({ length: value }, (_, index) => index + 1).reduce((a, b) => a * b, 1);
     const values = Array.from({ length: (n ?? 0) + 1 }, (_, k) => factorial(n ?? 0) / (factorial(k) * factorial((n ?? 0) - k)) * (p ?? 0) ** k * (1 - (p ?? 0)) ** ((n ?? 0) - k));
     const max = Math.max(...values, 1e-6);
-    const bars = values.map((value, k) => `<rect x="${sx(k) - 7}" y="${bottom - value / max * (bottom - top)}" width="14" height="${value / max * (bottom - top)}" fill="#1769aa"/>`).join("");
+    const bars = values.map((value, k) => `<rect x="${sx(k) - 7}" y="${bottom - value / max * (bottom - top)}" width="14" height="${value / max * (bottom - top)}" fill="${isShaded(k) ? "#d8560a" : "#1769aa"}"/>`).join("");
     return svgFrame(`<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/>${bars}`, 640, 330, node.params.caption ?? "二項分布");
   }
-  const samples = Array.from({ length: 241 }, (_, index) => {
-    const x = xRange[0] + (xRange[1] - xRange[0]) * index / 240;
+  const values = Array.from({ length: 241 }, (_, index) => xRange[0] + (xRange[1] - xRange[0]) * index / 240);
+  for (const boundary of [shade?.lower, shade?.upper]) if (boundary !== undefined) values.push(boundary);
+  const samples = [...new Set(values)].sort((a, b) => a - b).map((x) => {
     const y = Math.exp(-0.5 * ((x - mean) / standardDeviation) ** 2);
-    return `${sx(x)},${bottom - y * (bottom - top)}`;
+    return { x, point: `${sx(x)},${bottom - y * (bottom - top)}` };
   });
-  return svgFrame(`<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/><polyline class="line" stroke="#1769aa" points="${samples.join(" ")}"/>`, 640, 330, node.params.caption ?? "正規分布");
+  const shaded = samples.filter(({ x }) => isShaded(x));
+  const area = shaded.length > 1
+    ? `<polygon points="${sx(shaded[0].x)},${bottom} ${shaded.map(({ point }) => point).join(" ")} ${sx(shaded.at(-1)!.x)},${bottom}" fill="#d8560a" fill-opacity="0.28"/>`
+    : "";
+  return svgFrame(`${area}<line class="axis" x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}"/><polyline class="line" stroke="#1769aa" points="${samples.map(({ point }) => point).join(" ")}"/>`, 640, 330, node.params.caption ?? "正規分布");
 }
 
 function venn(node: FigureNode) {
   const result = parseVennDiagramConfig(node.params);
   if (!result.ok) throw new Error(result.errors.join(" "));
-  const { sets, universe, showUniverse } = result.config;
+  const { sets, universe, showUniverse, regions } = result.config;
   const positions = sets.length === 2
     ? [{ x: 230, y: 145 }, { x: 350, y: 145 }]
     : [{ x: 240, y: 130 }, { x: 350, y: 130 }, { x: 295, y: 205 }];
   const circles = sets.map((set, index) => `<circle cx="${positions[index].x}" cy="${positions[index].y}" r="92" fill="${COLORS[index]}22" stroke="${COLORS[index]}" stroke-width="2"/><text text-anchor="middle" x="${positions[index].x}" y="${positions[index].y - 100}">${xml(set.label)}</text>`).join("");
-  return svgFrame(`${showUniverse ? `<rect x="55" y="28" width="530" height="285" fill="none" stroke="#41576a"/><text x="65" y="48">${xml(universe)}</text>` : ""}${circles}`, 640, 340, node.params.caption ?? "ベン図");
+  const [a, b, c] = sets.map((set) => set.id);
+  const regionPositions: Record<string, { x: number; y: number }> = sets.length === 2
+    ? { [`${a}-only`]: { x: 170, y: 150 }, [`${b}-only`]: { x: 410, y: 150 }, [`${a}&${b}`]: { x: 290, y: 150 }, outside: { x: 88, y: 285 } }
+    : { [`${a}-only`]: { x: 190, y: 115 }, [`${b}-only`]: { x: 400, y: 115 }, [`${c}-only`]: { x: 295, y: 245 }, [`${a}&${b}`]: { x: 295, y: 90 }, [`${a}&${c}`]: { x: 245, y: 175 }, [`${b}&${c}`]: { x: 345, y: 175 }, [`${a}&${b}&${c}`]: { x: 295, y: 145 }, outside: { x: 88, y: 285 } };
+  const regionLabels = regions.map((region) => {
+    const position = regionPositions[region.key] ?? positions[sets.findIndex((set) => set.id === region.key)];
+    return position ? `<text text-anchor="middle" x="${position.x}" y="${position.y}">${xml(region.label)}</text>` : "";
+  }).join("");
+  return svgFrame(`${showUniverse ? `<rect x="55" y="28" width="530" height="285" fill="none" stroke="#41576a"/><text x="65" y="48">${xml(universe)}</text>` : ""}${circles}${regionLabels}`, 640, 340, node.params.caption ?? "ベン図");
 }
 
 function simpleTree(node: FigureNode) {

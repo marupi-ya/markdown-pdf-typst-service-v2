@@ -64,7 +64,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
     try {
       const status = await getCachedCompilerStatus();
-      json(response, 200, { available:status.available,version:status.version,runtime,release:process.env.RENDER_GIT_COMMIT??"local",activeCompiles,supportedThemes: Object.keys(TYPST_THEME_LABELS), supportedFigures: [...FIGURE_TYPES,...MATH_C_TYPES,...extensionRegistry.list().filter(item=>item.kind==="figure").map(item=>item.type)], supportedExtensions: Object.fromEntries(extensionRegistry.list().map(item=>[item.type,item.version])) });
+      json(response, 200, { available:status.available,version:status.version,runtime,release:process.env.RENDER_GIT_COMMIT??"local",activeCompiles,supportedThemes: Object.keys(TYPST_THEME_LABELS), supportedFigures: [...new Set([...FIGURE_TYPES,...MATH_C_TYPES,...extensionRegistry.list().filter(item=>item.kind==="figure").map(item=>item.type)])].filter(type=>!["image","generic-table"].includes(type)), supportedExtensions: Object.fromEntries(extensionRegistry.list().map(item=>[item.type,item.version])) });
     } catch (error) {
       const payload = error instanceof TypstCompilerError ? error.payload : typstErrorPayload(error, "compiler");
       json(response, 503, { available: false, ...payload });
